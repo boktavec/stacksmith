@@ -1,0 +1,26 @@
+# Local AI assistant instructions
+/AGENTS.md
+/CLAUDE.md
+
+# Terraform working data and state (may contain secrets)
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Saved plans: use .tfplan for named plan files
+*.tfplan
+*.tfplan.*
+tfplan
+
+# Local Terraform inputs; keep sanitized examples trackable
+*.tfvars
+*.tfvars.json
+!*.example.tfvars
+!*.example.tfvars.json
+
+# Environment secrets; keep the safe template trackable
+.env
+.env.*
+!.env.example
+
+# Intentionally keep .terraform.lock.hcl trackable.
