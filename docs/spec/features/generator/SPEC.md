@@ -1,7 +1,7 @@
 # Feature spec: generator (Milestone 3)
 
 Status: STACK-5 and STACK-6 approved and implemented; STACK-7 (section 3)
-approved for implementation; STACK-8 unplanned.
+approved and implemented; STACK-8 (section 4) approved for implementation.
 Parent plan: `docs/stacksmith-core-plan.md`, sections 4-8 and section 9,
 "Milestone 3 - generate the root we already understand."
 Predecessor: `docs/spec/features/spec-parse-validate/SPEC.md` (Milestone 2, complete).
@@ -9,8 +9,7 @@ Tracking: YouTrack STACK-1 (milestone); stories STACK-5 to STACK-8, one PR each,
 implemented in order.
 
 This folder holds the contract for all of Milestone 3. STACK-5 to STACK-7 are
-designed in detail. STACK-8 is an outline copied
-from its YouTrack description and must be planned before it is implemented.
+designed in detail. STACK-8 is approved for implementation.
 
 ## Story chain
 
@@ -19,7 +18,7 @@ from its YouTrack description and must be planned before it is implemented.
 | STACK-5 | M3.1: Resolve validated inputs into generator configuration | Designed (section 1) |
 | STACK-6 | M3.2: Render deterministic Terraform root files | Designed (section 2) |
 | STACK-7 | M3.3: Bundle the canonical S3 module in generated output | Approved (section 3) |
-| STACK-8 | M3.4: Verify generator parity, determinism, and Terraform validity | Placeholder (section 4) |
+| STACK-8 | M3.4: Verify generator parity, determinism, and Terraform validity | Approved (section 4) |
 
 ---
 
@@ -542,21 +541,176 @@ through `Generate` rather than only `renderModule`.
 2. Should the drift-guard test live in this slice or be left to STACK-8? It is
    cheap here, and it protects the "deliberate" intent of decision 1.
 
-## 4. STACK-8: verify parity, determinism, and Terraform validity (placeholder)
+## 4. STACK-8: verify parity, determinism, and Terraform validity
 
-Outline only, from YouTrack. Needs its own planning before implementation.
-Predecessor: STACK-7.
+Status: approved for implementation (STACK-8 only). Predecessor: STACK-7 (merged).
 
-- End-to-end tests: equivalent YAML and JSON inputs give byte-identical named
-  files; repeated generation is deterministic.
-- Invalid inputs give diagnostics and zero files.
-- Generated root is readable and passes Terraform format/validate using an
-  offline fixture where possible; no AWS operations.
-- Module output is byte-identical to the canonical module.
-- Minimum generator usage and learning notes only.
-- Run `go test ./...`, `go vet ./...`, `go build ./...` and relevant Terraform
-  checks; record unavailable checks honestly.
-- Non-goals: CLI, AWS access, deployment.
+### 4.1 Goal
+
+Close Milestone 3 by proving, end to end through `Generate`, that the 8-file
+output is identical for equivalent YAML and JSON input, is stable across runs,
+and is accepted by `terraform fmt -check` and `terraform validate` without AWS
+access. Also run the module's native `terraform test` offline. Add a short
+generator usage and learning note. No product behavior changes.
+
+### 4.2 Scope
+
+- `core/verify_test.go` (new): parity and full-output determinism tests.
+- `core/terraform_test.go` (new): fmt, validate and module `terraform test`
+  checks on the generated YAML-example output written to `t.TempDir()`, with
+  explicit skip paths.
+- `docs/learning/generator.md` (new): minimum `Generate` usage, Milestone 3
+  teaching points, how to run the Terraform checks offline, what is not verified.
+- Whitespace fix in `core/modules/s3/tests/s3.tftest.hcl` (alignment inside the
+  `variables {}` block only). This is the only non-test, non-doc file touched,
+  and it is not a generated or embedded file. Confirm the drift-guard and
+  embedded-module tests still pass.
+- Update this spec's status and approval log.
+- No new Go dependencies. No change to `core` non-test Go files.
+
+### 4.3 Non-goals
+
+- CLI, writing files outside `t.TempDir()`, any adapter (Milestone 4).
+- AWS access, credentials, `plan` against real AWS, `apply`, `destroy`, a backend,
+  or network provider download. (`terraform test` here uses the module's
+  `mock_provider "aws"` and `command = plan` only; see risks.)
+- Changing the generator, the module's `.tf` files, or existing goldens.
+- Re-testing what STACK-6/7 cover (canonical-module byte equality, drift guard,
+  escaping, invalid-input-no-files, root structure).
+- Generated root vs `examples/manual-root` diff test (decision 6).
+- Makefile (decision 5).
+
+### 4.4 Repository facts
+
+- Already covered: invalid input yields nil files; module bytes equal canonical
+  for both formats; module-dir drift guard; root and module determinism; escaping;
+  root structure (region, allowed account IDs, module source, five arguments,
+  output precondition).
+- `TestGenerateGolden` compares both formats to one golden set, so parity is only
+  transitive today; no test compares the two generated outputs directly.
+- Terraform v1.15.7 at `/opt/homebrew/bin/terraform`; root requires `>= 1.7.0`.
+  `fmt` is offline. `validate` and `test` need `init` and the AWS provider
+  (exactly 5.100.0), even with `mock_provider`.
+- No shared plugin cache or CLI config exists. A gitignored copy of provider
+  5.100.0 exists under `examples/manual-root/.terraform/providers` (unpacked
+  mirror layout); not present on a fresh clone or CI.
+- `terraform fmt -check` is clean on generated root and module files; the only
+  failing repo file is `s3.tftest.hcl` (fixed in this story).
+- `core/modules/s3/tests/s3.tftest.hcl` uses `mock_provider "aws" {}` and
+  `command = plan` runs.
+- `TestCoreNonTestFilesStayPure` forbids `os`, `net`, `os/exec` in non-test core
+  files; test files may use them.
+
+### 4.5 Decisions (user)
+
+1. Terraform checks live in Go tests (`core/terraform_test.go`), not a script.
+2. Provider supplied via env var `STACKSMITH_TF_PLUGIN_DIR` pointing at an
+   unpacked provider mirror. No auto-discovery of repo-local `.terraform`.
+3. Only the YAML example is run through Terraform; JSON is covered by parity.
+4. Missing Terraform/provider: skip with a message naming what was not verified;
+   `STACKSMITH_REQUIRE_TERRAFORM=1` turns skips into failures.
+5. The Terraform command is documented in the learning note only; no Makefile.
+6. No generated-vs-manual-root diff test.
+7. Learning note at `docs/learning/generator.md`.
+8. In scope: fix `s3.tftest.hcl` whitespace and run `terraform test` on the
+   module. (Planner recommended leaving both out; user chose to include them.)
+
+### 4.6 Design
+
+**Parity and determinism (pure Go, always run):**
+1. `Generate(yaml)` and `Generate(json)` of the example inputs return the same
+   paths, order and `bytes.Equal` contents for all 8 files.
+2. `Generate` repeated several times on the same input returns identical output.
+
+**Terraform checks (explicit skips):**
+1. Generate from the YAML example; write all 8 files to `t.TempDir()` by `Path`.
+2. `terraform fmt -check -recursive -diff` on that directory. Needs only the
+   binary.
+3. With a provider mirror: `terraform init -backend=false -input=false
+   -plugin-dir=$STACKSMITH_TF_PLUGIN_DIR`, then `terraform validate`.
+4. Module tests: from the temp dir's `modules/s3` copy, run `terraform init` with
+   the same plugin dir and `terraform test`. The generated output does not
+   include `tests/`, so the test copies `core/modules/s3/tests/` into the temp
+   module copy (test files only, from the canonical source); the temp dir is
+   discarded. Run it against a separate temp copy of the canonical module so the
+   generated output tree stays exactly the 8 files that validate sees.
+5. Subprocess environment: allowlist `PATH`, `HOME`, `TMPDIR`, plus
+   `CHECKPOINT_DISABLE=1`, `TF_IN_AUTOMATION=1`, and `TF_CLI_CONFIG_FILE` set to a
+   nonexistent path. No `AWS_*`. `exec.CommandContext` with timeout, fixed args,
+   no shell. Only `version`, `fmt`, `init -backend=false`, `validate`, `test`
+   are ever run.
+6. Skip rules, each with `t.Skipf` naming what was not verified:
+   `terraform` absent or older than `1.7.0` -> skip all; provider env var unset or
+   mirror lacks `registry.terraform.io/hashicorp/aws/5.100.0/<os_arch>` -> skip
+   validate and test (fmt still runs). `STACKSMITH_REQUIRE_TERRAFORM=1` converts
+   every skip to a failure.
+
+Rejected: plain `terraform init` (network, flaky); committing a provider or lock
+file (binary, platform-specific, StackSmith must not fabricate locks); validating
+in `examples/manual-root/.terraform` (wrong files, untracked state).
+
+### 4.7 Acceptance criteria
+
+1. A test proves YAML and JSON `Generate` output is identical in path, order and
+   bytes for all 8 files.
+2. A test proves repeated `Generate` calls give identical output for all 8 files.
+3. `terraform fmt -check` passes on generated output when Terraform is present.
+4. `terraform init -backend=false -plugin-dir` + `terraform validate` pass on
+   generated output when the mirror is supplied, with no network or AWS access.
+5. `terraform test` passes on the module when the mirror is supplied, and
+   `terraform fmt -check` passes on `s3.tftest.hcl`.
+6. Missing Terraform or mirror skips with a message naming what was not verified;
+   `STACKSMITH_REQUIRE_TERRAFORM=1` makes it fail.
+7. No Terraform subprocess has AWS credentials in its environment.
+8. No file outside `t.TempDir()` is created or modified by tests; `git status`
+   is clean after `go test ./...`.
+9. `docs/learning/generator.md` exists.
+10. `go test ./...`, `go vet ./...`, `go build ./...` pass; `gofmt` clean; core
+    non-test Go files unchanged; embedded module tests still pass. The PR states
+    which Terraform checks ran and which were skipped.
+
+### 4.8 Risks and security
+
+- False confidence from skips: verbose skip reasons, the require flag, and the PR
+  stating actual results.
+- Provider mirror trust: developer-supplied, hash not verified; no credentials
+  present; `validate` and mocked `test` never call AWS. No auto-discovery outside
+  the supplied path.
+- `terraform test` scope creep: it must stay on `mock_provider` with
+  `command = plan`. If any test block uses `apply` or a real provider, stop and
+  return to the user. Verify before implementing.
+- Subprocess surface: fixed args, cleaned env, timeouts, no shell.
+- Network: `CHECKPOINT_DISABLE=1` and `-plugin-dir`; if init still tries the
+  network, the test fails rather than falling back.
+- Pure-library boundary: all side effects in `_test.go`; purity test guards it.
+- Version drift: a mirror with another aws version fails init, correctly.
+- Not covered: real AWS behavior, real `plan`/`apply`, state (Milestone 5); report
+  as unverified, not passed.
+
+### 4.9 Testing
+
+Per `.agents/skills/test-writing/SKILL.md`: real `Generate` and real Terraform, no
+mocks. Prove sensitivity by corrupting a generated byte / module path in an
+uncommitted scratch run and recording the failure. Verify skip paths with
+`PATH` lacking `terraform` and with the env var unset. Run with `-count=2`, and
+`-race` if cheap.
+
+### 4.10 Ordered implementation steps
+
+1. Confirm `s3.tftest.hcl` uses only mocked plan runs; fix its whitespace; confirm
+   drift-guard tests still pass.
+2. Add parity and determinism tests; prove sensitivity.
+3. Add Terraform helper (temp dir, env, skip logic) and the fmt test.
+4. Add init/validate and `terraform test` checks; run against the local mirror
+   under `examples/manual-root/.terraform/providers`, and with the env var unset.
+5. Write `docs/learning/generator.md`.
+6. gofmt, vet, build, test (with and without env vars), purity, clean `git status`.
+7. Independent review with `staff-engineering-reviewer`; update approval log.
+
+### 4.11 Walkthrough hand-off
+
+After the PR, provide the AGENTS.md data-flow walkthrough, stating which
+Terraform checks ran and which were skipped.
 
 ## 5. Approval log
 
@@ -573,3 +727,8 @@ Predecessor: STACK-7.
 - 2026-10-13: user approved decisions 4-6 and the STACK-7 spec (section 3) for
   implementation on branch `feature/STACK-7-bundle-s3-module`, including the
   drift-guard test in this slice. STACK-8 remains unplanned.
+- 2026-10-13: STACK-8 spec (section 4) drafted on branch
+  `feature/STACK-8-verify-generator` with user decisions 1-8. Status: draft, NOT
+  approved; awaiting user review.
+- 2026-10-13: user approved the STACK-8 spec (section 4), decisions 1-8, for
+  implementation on branch `feature/STACK-8-verify-generator`.
