@@ -128,12 +128,12 @@ func TestGenerateAcceptsValidInput(t *testing.T) {
 		if len(diagnostics) != 0 {
 			t.Fatalf("Generate() diagnostics = %+v", diagnostics)
 		}
-		if len(files) != len(rootFileOrder) {
-			t.Fatalf("Generate() returned %d files; want %d", len(files), len(rootFileOrder))
+		if len(files) != len(generatedFileOrder) {
+			t.Fatalf("Generate() returned %d files; want %d", len(files), len(generatedFileOrder))
 		}
 		for i, file := range files {
-			if file.Path != rootFileOrder[i] || len(file.Content) == 0 {
-				t.Fatalf("Generate() file %d = %q (%d bytes); want %q non-empty", i, file.Path, len(file.Content), rootFileOrder[i])
+			if file.Path != generatedFileOrder[i] || len(file.Content) == 0 {
+				t.Fatalf("Generate() file %d = %q (%d bytes); want %q non-empty", i, file.Path, len(file.Content), generatedFileOrder[i])
 			}
 		}
 	}

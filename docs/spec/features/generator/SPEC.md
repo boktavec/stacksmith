@@ -1,23 +1,24 @@
 # Feature spec: generator (Milestone 3)
 
-Status: approved for implementation (STACK-5 only).
+Status: STACK-5 and STACK-6 approved and implemented; STACK-7 (section 3)
+approved for implementation; STACK-8 unplanned.
 Parent plan: `docs/stacksmith-core-plan.md`, sections 4-8 and section 9,
 "Milestone 3 - generate the root we already understand."
 Predecessor: `docs/spec/features/spec-parse-validate/SPEC.md` (Milestone 2, complete).
 Tracking: YouTrack STACK-1 (milestone); stories STACK-5 to STACK-8, one PR each,
 implemented in order.
 
-This folder holds the contract for all of Milestone 3. Only STACK-5 is designed
-in detail. STACK-6 to STACK-8 are outlines copied from their YouTrack
-descriptions and must be planned before they are implemented.
+This folder holds the contract for all of Milestone 3. STACK-5 to STACK-7 are
+designed in detail. STACK-8 is an outline copied
+from its YouTrack description and must be planned before it is implemented.
 
 ## Story chain
 
 | Story | Title | Status in this spec |
 | --- | --- | --- |
 | STACK-5 | M3.1: Resolve validated inputs into generator configuration | Designed (section 1) |
-| STACK-6 | M3.2: Render deterministic Terraform root files | Placeholder (section 2) |
-| STACK-7 | M3.3: Bundle the canonical S3 module in generated output | Placeholder (section 3) |
+| STACK-6 | M3.2: Render deterministic Terraform root files | Designed (section 2) |
+| STACK-7 | M3.3: Bundle the canonical S3 module in generated output | Approved (section 3) |
 | STACK-8 | M3.4: Verify generator parity, determinism, and Terraform validity | Placeholder (section 4) |
 
 ---
@@ -295,18 +296,251 @@ Use `.agents/skills/test-writing/SKILL.md`: real code paths, table-driven.
 4. `gofmt`, `go vet ./...`, `go build ./...`, `go test ./...`, import check.
 5. Independent review (`staff-engineering-reviewer`) against this section.
 
-## 3. STACK-7: bundle the canonical S3 module (placeholder)
+## 3. STACK-7: bundle the canonical S3 module in generated output
 
-Outline only, from YouTrack. Needs its own planning before implementation.
-Predecessor: STACK-6.
+Status: approved for implementation (STACK-7 only). Predecessor: STACK-6 (merged).
 
-- Embed only the canonical production module files from `core/modules/s3`.
-- Place them under the documented generated path; omit tests, provider lock
-  files and unrelated files.
-- Copy bytes unchanged; no second implementation, no source transformation.
-- Tests compare each generated module file byte-for-byte with its canonical
-  source and verify deterministic paths.
-- Non-goals: CLI, later slices.
+### 3.1 Goal
+
+Make `Generate` return a self-contained deployment: the four root files from
+STACK-6 followed by the four canonical S3 module files under `modules/s3/`,
+so the root's `source = "./modules/s3"` resolves. The module bytes come from
+the same `.tf` files the manual root and the Terraform tests use; there is no
+second copy and no transformation.
+
+### 3.2 Scope
+
+- `core/render.go`: a `go:embed` directive naming the four production module
+  files, an `embed.FS` variable, and an unexported `renderModule() []File`.
+- `core/generate.go`: `Generate` returns `append(renderRoot(r), renderModule()...)`;
+  update the doc comments on `Generate` and `File.Path` (slash-separated,
+  relative, may contain directories).
+- Tests in `core/render_test.go` (and one-line updates in
+  `core/resolve_test.go`, see 3.8).
+- No new dependencies (`embed` is standard library). No new package.
+
+### 3.3 Non-goals
+
+- CLI, writing files, creating directories, or any I/O (the future adapter
+  creates `modules/s3/` when it writes `File.Path`).
+- YAML/JSON parity, Terraform fmt/validate on the output, "module output
+  identical to canonical" end-to-end checks beyond this slice (STACK-8).
+- Changing any file under `core/modules/s3`, adding a header comment to module
+  files, or a second module (only `s3-private/v1` exists).
+- Module goldens under `core/testdata/`: the canonical source is the golden.
+
+### 3.4 Repository facts
+
+- `core/modules/s3/` is tracked and holds `main.tf`, `variables.tf`,
+  `outputs.tf`, `versions.tf`, `tests/s3.tftest.hcl` and a tracked
+  `.terraform.lock.hcl`. Only the four `.tf` files are production files.
+- The module declares exactly the five variables the root passes
+  (`bucket_name`, `name`, `environment`, `owner`,
+  `noncurrent_version_expiration_days`) and outputs `bucket_name` and
+  `bucket_arn`, which the root references.
+- Plan section 7: "Go embeds those same `.tf` files from `core/modules/s3/`.
+  Tests are not copied into generated deployments." Plan section 8 fixes the
+  generated layout (`modules/s3/{main,variables,outputs,versions}.tf`) and
+  says module files are copied unchanged. The root `main.tf` already emits
+  `source = "./modules/s3"` (STACK-6).
+- `render_test.go` already has `TestCoreNonTestFilesStayPure`, which forbids
+  `os`, `net`, `os/exec` imports in non-test files. `embed` is not on that
+  list and does no I/O at run time.
+- Verified in a scratch copy (Go 1.27.0, outside the repo): an explicit
+  `//go:embed modules/s3/main.tf modules/s3/variables.tf modules/s3/outputs.tf
+  modules/s3/versions.tf` placed in a file in `core/` compiles; the resulting
+  `embed.FS` holds exactly those four files at those paths; `ReadFile` bytes
+  equal `os.ReadFile` of the source; a listed file that does not exist fails
+  at compile time (`no matching files found`); a pattern containing `..` is
+  rejected (`invalid pattern syntax`). Embed paths are relative to the
+  directory of the Go file containing the directive, so the directive must
+  live in `core/`, and the in-FS path equals the generated path.
+
+### 3.5 Decisions (user)
+
+1. The `go:embed` directive lives in `core` (in `core/render.go`) and lists the
+   four files explicitly, not a glob, so adding a module file is a deliberate
+   code change. No new package.
+2. Byte-equality tests read the canonical files from disk with `os.ReadFile`
+   in the test only; the core stays free of `os`.
+3. `Generate` returns the four root files followed by the four module files in
+   a fixed order.
+
+Decisions below were recommended by the plan and approved by the user on 2026-10-13:
+
+4. Embed into an `embed.FS` (not `[]byte` or `string` variables) and call
+   `ReadFile` inside `renderModule`. `ReadFile` returns a fresh copy each
+   call, so a caller that mutates `File.Content` cannot corrupt later calls.
+   Listed files are guaranteed to exist at compile time, so a `ReadFile`
+   error is a programming error and `renderModule` panics with a clear
+   message rather than adding an error return to `Generate`.
+5. Module files carry no StackSmith header (bytes unchanged). The root header
+   already records generator version and module ID.
+6. Include a drift-guard test (3.9) so a new file in `core/modules/s3` fails
+   the test until someone decides to bundle or exclude it.
+
+### 3.6 Design
+
+Output order is fixed, 8 files total:
+
+| # | Path | Source |
+| --- | --- | --- |
+| 1-4 | `versions.tf`, `providers.tf`, `main.tf`, `outputs.tf` | `renderRoot` (STACK-6, unchanged) |
+| 5 | `modules/s3/main.tf` | embedded `modules/s3/main.tf` |
+| 6 | `modules/s3/variables.tf` | embedded `modules/s3/variables.tf` |
+| 7 | `modules/s3/outputs.tf` | embedded `modules/s3/outputs.tf` |
+| 8 | `modules/s3/versions.tf` | embedded `modules/s3/versions.tf` |
+
+Sketch (illustrative, final code is the implementer's):
+
+```go
+//go:embed modules/s3/main.tf modules/s3/variables.tf modules/s3/outputs.tf modules/s3/versions.tf
+var moduleFS embed.FS
+
+var moduleFiles = []string{"modules/s3/main.tf", "modules/s3/variables.tf",
+    "modules/s3/outputs.tf", "modules/s3/versions.tf"}
+
+func renderModule() []File { /* ReadFile each, in moduleFiles order */ }
+```
+
+Rules:
+
+- The embed path, the `moduleFiles` entry and the generated `File.Path` are the
+  same string. Paths use `/` (as `embed` does), never `filepath`.
+- `moduleFiles` and the `go:embed` list must match. A test enforces that
+  (3.9) so they cannot drift; if the implementer prefers one source of truth,
+  deriving the list with `fs.ReadDir` on `moduleFS` is acceptable because the
+  FS can only contain the four listed files, but the fixed order must still be
+  explicit (`ReadDir` is sorted alphabetically, which would reorder
+  `outputs.tf` before `variables.tf`), so the explicit slice is recommended.
+- `renderModule` takes no arguments: module bytes do not depend on input.
+  `.terraform.lock.hcl` and `tests/` are never named, so they cannot be
+  embedded (and `go:embed` ignores dot-files in directory patterns anyway,
+  which is not relied upon).
+- No string handling of module content: bytes in, same bytes out.
+- Core stays pure: `embed` only; no `os`, `net`, `os/exec`.
+
+Alternatives rejected:
+
+- `//go:embed modules/s3/*.tf` or the directory: would silently bundle any new
+  file (contradicts decision 1); a directory pattern would also pull in
+  `tests/`.
+- A separate `modules` Go package exposing the FS: adds a package for no
+  second consumer (user decision 1).
+- `[]byte`/`string` embed variables: shared mutable backing array for `[]byte`;
+  four variables instead of one FS.
+- Rewriting or templating module text (for example to add a header): breaks
+  "copy bytes unchanged" and the byte-equality guarantee.
+
+### 3.7 Acceptance criteria
+
+1. Only `main.tf`, `variables.tf`, `outputs.tf` and `versions.tf` from
+   `core/modules/s3` are embedded, named explicitly in the directive.
+2. For valid input, `Generate` returns 8 files: the four root files, then
+   `modules/s3/main.tf`, `modules/s3/variables.tf`, `modules/s3/outputs.tf`,
+   `modules/s3/versions.tf`, in that order, with no duplicate paths.
+3. No generated file is `tests/`, `.terraform.lock.hcl`, or anything else from
+   `core/modules/s3`.
+4. Each module file's `Content` is byte-for-byte equal to its canonical source
+   file, with no transformation.
+5. Invalid input still returns `nil` files and the same diagnostics as
+   `Validate` (module files are not returned for invalid input).
+6. Output is deterministic: two `Generate` calls give equal paths and bytes,
+   and mutating a returned `Content` does not change a later call.
+7. `core` still has no `os`, `net`, `os/exec` imports in non-test files.
+8. `go test ./...`, `go vet ./...`, `go build ./...` pass; `gofmt` is clean.
+
+### 3.8 Existing tests that must change
+
+Adding four files breaks these assumptions. Each is a deliberate edit, not a
+weakened check:
+
+| Test | Why it breaks | Change |
+| --- | --- | --- |
+| `TestGenerateGolden` (`render_test.go`) | iterates every generated file and reads `testdata/bucket/<Path>`; `modules/s3/*` goldens do not exist (and `-update` would write module copies into `testdata`) | compare only the four root files (skip paths under `modules/`); module files are covered by the new byte-equality test |
+| `TestGenerateExamplesMatchGolden` | `len(files) != len(rootFileOrder)` fails at 8 vs 4; loop reads missing goldens | assert 8 files; compare root files to goldens; module files are covered by the new test |
+| `TestGenerateFilesAndOrder` | requires the standard header on every file and `paths == rootFileOrder` | header check on root files only; assert full 8-path order |
+| `TestGenerateAcceptsValidInput` in `resolve_test.go` (lines ~127-137) | `len(files) != len(rootFileOrder)` and per-index path check | compare against a new full-order list |
+| `TestRenderRootDeterministic`, `TestRenderRootStructure`, `TestRenderRootEscapesHostileValues`, `TestGenerateInvalidInputYieldsNoFiles` | call `renderRoot` directly or assert `nil` | no change needed |
+
+Suggested helper: keep `rootFileOrder`, add `moduleFileOrder` (the four
+`modules/s3/...` paths) and `generatedFileOrder = root + module`.
+
+### 3.9 Risks and security
+
+- **Silent drift or accidental bundling.** A new file in `core/modules/s3` is
+  not bundled unless named (by design). Mitigation: the drift-guard test fails
+  when a regular file exists in `core/modules/s3` that is neither bundled nor
+  in a small explicit exclusion list in the test (`tests/`,
+  `.terraform.lock.hcl`), forcing a conscious decision.
+- **Lock file or test leakage.** Excluded by naming; the test asserts no
+  generated path contains `tests/` or ends in `.terraform.lock.hcl`, and that
+  the set of generated module paths is exactly the four expected.
+- **Module and root contract drift.** The root passes five inputs and
+  references `bucket_name` and `bucket_arn`; the module declares and outputs
+  them today. Nothing in this slice checks it automatically; STACK-8's
+  `terraform validate` does. Do not add a Go-side check here.
+- **Provider constraint compatibility.** Root pins `5.100.0`; module keeps
+  `~> 5.0`, which 5.100.0 satisfies. Plan section 8: module bytes change only
+  with a StackSmith release; bump `generatorVersion` by hand when they do.
+- **Checkout transforms.** If a checkout converts line endings (for example
+  Windows `autocrlf`), embedded bytes are the converted bytes and the test
+  compares against the same checkout, so it still passes; the repo has no
+  `.gitattributes`. Noted, not mitigated; out of scope.
+- **Shared state.** Mutating a returned `Content` slice must not affect the
+  embedded data or later calls; `embed.FS.ReadFile` copies, and a test proves
+  it.
+- **Panic path.** `renderModule` panics only if an embedded file is missing,
+  which the compiler prevents. Not reachable from user input.
+- **Security.** Module content is trusted repository source, not user input,
+  so no escaping applies; user values still reach HCL only via STACK-6's typed
+  APIs. Nothing here touches AWS, credentials, or the filesystem. Generated
+  Terraform is still never applied by this work.
+
+### 3.10 Testing
+
+Use `.agents/skills/test-writing/SKILL.md`: real code paths, table-driven,
+through `Generate` rather than only `renderModule`.
+
+- **Byte-for-byte parity:** for each of the four expected module paths, find
+  the file in `Generate` output and compare its `Content` with
+  `os.ReadFile(filepath.Join("modules", "s3", name))` using `bytes.Equal`
+  (path relative to `core/`, which is the test working directory). `os` is
+  used in the test only.
+- **Deterministic paths and order:** the full `Generate` path list equals
+  `generatedFileOrder` for both YAML and JSON inputs; no duplicate paths.
+- **Excluded files:** no generated path begins with `modules/s3/tests/` or
+  ends with `.terraform.lock.hcl`; exactly four paths begin with `modules/s3/`.
+- **Drift guard:** `os.ReadDir("modules/s3")`; every regular file must be in
+  the bundled list or the explicit exclusion list; directories other than
+  `tests` fail.
+- **Determinism and isolation:** two `Generate` calls give equal results;
+  zeroing the bytes of one call's module `Content` leaves a second call's
+  content equal to the canonical file.
+- **Invalid input:** existing `TestGenerateInvalidInputYieldsNoFiles` still
+  passes (`nil` files, identical diagnostics).
+- Update the tests listed in 3.8; confirm the new/changed tests fail before
+  the implementation and pass after.
+- Purity import check (`TestCoreNonTestFilesStayPure`) unchanged and passing.
+
+### 3.11 Ordered implementation steps
+
+1. Update the tests first (3.8, 3.10): new order constants, byte-equality,
+   excluded-files and drift-guard tests; confirm they fail (8 files expected,
+   4 returned).
+2. Add the `go:embed` directive, `moduleFS`, `moduleFiles` and `renderModule`
+   in `core/render.go`.
+3. Wire `Generate` to append `renderModule()`; update the doc comments on
+   `Generate` and `File.Path`.
+4. `gofmt`, `go vet ./...`, `go build ./...`, `go test ./...`, import check.
+5. Independent review (`staff-engineering-reviewer`) against this section.
+
+### 3.12 Open questions
+
+1. Confirm decisions 4-6 (embed into `embed.FS` with `ReadFile`; no header on
+   module files; drift-guard test). Each is small and reversible.
+2. Should the drift-guard test live in this slice or be left to STACK-8? It is
+   cheap here, and it protects the "deliberate" intent of decision 1.
 
 ## 4. STACK-8: verify parity, determinism, and Terraform validity (placeholder)
 
@@ -332,3 +566,10 @@ Predecessor: STACK-7.
   `feature/generator` (off `origin/main`). STACK-6 to STACK-8 remain unplanned.
 - 2026-10-12: user approved the STACK-6 spec (section 2) for implementation on
   branch `feature/STACK-6-render-root-files`. STACK-7 and STACK-8 remain unplanned.
+- 2026-10-13: STACK-7 spec (section 3) drafted on branch
+  `feature/STACK-7-bundle-s3-module` with user decisions on embed location and
+  test approach. Status: draft, NOT approved; awaiting user review. STACK-8
+  remains unplanned.
+- 2026-10-13: user approved decisions 4-6 and the STACK-7 spec (section 3) for
+  implementation on branch `feature/STACK-7-bundle-s3-module`, including the
+  drift-guard test in this slice. STACK-8 remains unplanned.

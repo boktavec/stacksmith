@@ -1,6 +1,7 @@
 package core
 
 import (
+	"embed"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -18,6 +19,38 @@ const (
 	moduleLabel        = "bucket"
 	callerIdentityType = "aws_caller_identity"
 )
+
+// moduleFS holds the canonical production module files, embedded unchanged.
+// Files are listed one by one (no glob or directory) so adding a module file
+// is a deliberate change here; tests/ and the provider lock file are never
+// named, so they cannot be bundled. Keep moduleFiles in step with this list.
+//
+//go:embed modules/s3/main.tf modules/s3/variables.tf modules/s3/outputs.tf modules/s3/versions.tf
+var moduleFS embed.FS
+
+// moduleFiles is the fixed generated order. The embed path is also the
+// generated path (slash-separated, relative to the generated root).
+var moduleFiles = []string{
+	"modules/s3/main.tf",
+	"modules/s3/variables.tf",
+	"modules/s3/outputs.tf",
+	"modules/s3/versions.tf",
+}
+
+// renderModule returns the bundled module files with bytes identical to the
+// canonical source. ReadFile copies, so callers cannot alter later results.
+func renderModule() []File {
+	files := make([]File, 0, len(moduleFiles))
+	for _, path := range moduleFiles {
+		content, err := moduleFS.ReadFile(path)
+		if err != nil {
+			// Unreachable: go:embed fails the build if a listed file is missing.
+			panic("core: embedded module file missing: " + path)
+		}
+		files = append(files, File{Path: path, Content: content})
+	}
+	return files
+}
 
 // renderRoot builds the four Terraform root files for one resolved bucket.
 // Every value enters through cty typed values, which hclwrite escapes, and
