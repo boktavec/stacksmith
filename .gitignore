@@ -1,7 +1,3 @@
-# Local AI assistant instructions
-/AGENTS.md
-/CLAUDE.md
-
 # Terraform working data and state (may contain secrets)
 .terraform/
 *.tfstate
