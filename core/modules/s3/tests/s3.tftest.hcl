@@ -4,10 +4,10 @@ mock_provider "aws" {}
 
 variables {
   bucket_name                        = "acme-orders-assets-dev-123456789012-us-east-2"
-  name                                = "orders-assets"
-  environment                         = "dev"
-  owner                               = "orders-team"
-  noncurrent_version_expiration_days  = 30
+  name                               = "orders-assets"
+  environment                        = "dev"
+  owner                              = "orders-team"
+  noncurrent_version_expiration_days = 30
 }
 
 run "tags_are_set_correctly" {
