@@ -31,7 +31,16 @@ Read the relevant skill file before that kind of work:
 
 ## MCP and external tools
 
-Use current documentation tools (such as Context7) when a decision depends on version-specific library behavior. Use browser tools only when the feature has a runnable UI to verify. Tool availability varies by client; check before relying on a server and report unavailable checks honestly. Keep MCP credentials out of the repository, documentation, logs, and handoffs. No project-specific MCP server is required for StackSmith today.
+Use current documentation tools (such as Context7) when a decision depends on version-specific library behavior. Use browser tools only when the feature has a runnable UI to verify. Tool availability varies by client; check before relying on a server and report unavailable checks honestly. Keep MCP credentials out of the repository, documentation, logs, and handoffs.
+
+Use the YouTrack MCP for project tracking. The project is **StackSmith** (`STACK`) and its board is **StackSmith v0.1**. Before creating projects, boards, or issues, list existing items to avoid duplicates. Treat `docs/stacksmith-core-plan.md` and feature specs as the requirements source of truth.
+
+- Break each milestone into ordered, small user stories that can each be implemented and reviewed as a separate PR. Scope each slice naturally so its PR remains comfortably reviewable (roughly under 500 changed lines), but do not put a numeric line limit in the story itself; split the work further when needed.
+- Give each mini story its own focused implementation context. Include the story's scope, predecessor/dependencies, relevant design/spec references, explicit non-goals, and testable acceptance criteria. Each story must build on completed predecessor stories; don't implement later slices ahead of the chain.
+- Make acceptance criteria concrete and independently verifiable, including relevant tests/checks and safety constraints. Keep the parent milestone's goal visible across the sequence; update the plan/spec first if a necessary change alters its contract.
+- The project's configured issue Type supports `Feature` (use it for these milestone stories); `User Story` is not accepted. Preserve explicit authorization gates for AWS/Terraform operations in issue descriptions.
+
+Keep YouTrack credentials out of the repo, and don't delete or close issues or projects without explicit user direction.
 
 ## Planning and implementation workflow
 
