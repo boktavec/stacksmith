@@ -1,7 +1,7 @@
 # StackSmith Core v0.1 — implementation plan
 
-Status: consolidated design, awaiting final approval. No implementation authorized.
-Branch: `planning/stacksmith-core`.
+Status: approved; milestones 1 and 2 (parse and validate) are complete.
+Branch: `feature/spec-parse-validate`.
 
 Product choices below were agreed through one-question-at-a-time discussion.
 The detailed implementation contracts, checks, and milestone sequence are the
@@ -522,10 +522,9 @@ IAM/RBAC enforcement, runtime drift detection, all service/AI adapters, and SaaS
 10. **Two input formats add parser work.** Strictness and equivalent behavior need
     real tests, not confidence in permissive library defaults.
 
-## 12. Approval gate
+## 12. Approval and progress
 
-The S3 destruction safeguard is agreed: `force_destroy = false`, no override.
-The consolidated plan is ready for final review. No Terraform, Go implementation,
-AWS operations, or full project scaffold has been created during planning.
-
-Next question: approve this plan and begin **milestone 1 only**, or revise the design?
+The plan is approved. The S3 destruction safeguard is `force_destroy = false`,
+with no override. Milestones 1 (Terraform foundation) and 2 (strict parsing and
+validation) are complete. Generation and the CLI remain for later milestones;
+no AWS operations have been performed.

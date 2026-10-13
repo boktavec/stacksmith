@@ -1,6 +1,6 @@
 # Feature spec: parse and validate the contract (Milestone 2)
 
-Status: draft, awaiting approval.
+Status: complete.
 Parent plan: `docs/stacksmith-core-plan.md`, section 9, "Milestone 2 — parse
 and validate the contract." First Go code in the repo; no HCL generation or
 CLI output-writing yet (milestones 3-4).
@@ -26,9 +26,11 @@ diagnostics. No file writing, no HCL, no CLI wiring.
   `KnownFields(true)` + duplicate-key check on the decoded node tree) and
   strict JSON (`json.Decoder` with `DisallowUnknownFields` + a token-stream
   duplicate-key check) for both formats, one document per file, 1 MiB input
-  cap. Structural failures (malformed input, unknown/duplicate keys, wrong
-  types, nulls for required fields, unsupported `kind`/`apiVersion`/module ID,
-  oversized input) return `Diagnostic`s, not bare Go errors.
+  cap. Reject YAML aliases, merge keys, custom tags, non-string mapping keys,
+  and scalar type coercion. Structural failures (malformed input,
+  unknown/duplicate keys, wrong types, nulls for required fields, unsupported
+  `kind`/`apiVersion`/module ID, oversized input) return `Diagnostic`s, not bare
+  Go errors.
 - `core/validate.go` — `Validate(spec, standards) []Diagnostic`: the semantic
   rules from plan section 4 (slug formats, composed-name S3 legality,
   environment membership, 12-digit account ID, region syntax, owner

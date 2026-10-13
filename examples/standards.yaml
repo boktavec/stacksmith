@@ -1,0 +1,13 @@
+apiVersion: stacksmith/v1alpha1
+kind: PlatformStandards
+spec:
+  aws:
+    accountId: "123456789012" # Example only; replace before Terraform execution
+    region: us-east-2
+  environments:
+    - dev
+    - prod
+  bucket:
+    module: s3-private/v1
+    bucketNamePrefix: acme
+    noncurrentVersionExpirationDays: 30
