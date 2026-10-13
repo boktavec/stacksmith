@@ -1,7 +1,7 @@
 # Feature spec: generator (Milestone 3)
 
 Status: STACK-5 and STACK-6 approved and implemented; STACK-7 (section 3)
-approved and implemented; STACK-8 (section 4) approved for implementation.
+approved and implemented; STACK-8 (section 4) implemented, pending independent review.
 Parent plan: `docs/stacksmith-core-plan.md`, sections 4-8 and section 9,
 "Milestone 3 - generate the root we already understand."
 Predecessor: `docs/spec/features/spec-parse-validate/SPEC.md` (Milestone 2, complete).
@@ -732,3 +732,5 @@ Terraform checks ran and which were skipped.
   approved; awaiting user review.
 - 2026-10-13: user approved the STACK-8 spec (section 4), decisions 1-8, for
   implementation on branch `feature/STACK-8-verify-generator`.
+- 2026-10-13: STACK-8 implemented; independent review passed with no blocking
+  findings, and three non-blocking findings were fixed.
