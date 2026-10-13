@@ -82,10 +82,10 @@ checking. Both work; neither is substantially better for this small generator.
 Go's learning cost is real, so use ordinary functions and two packages rather
 than frameworks or speculative interfaces.
 
-Use Go's standard library for CLI flags, JSON, file operations, embedding, and
-tests. Add a maintained YAML parser and HashiCorp HCL v2 (`hclwrite`, with its
-cty value types). Do not add an AWS SDK, CLI framework, templating language, or
-policy framework. Confirm dependency versions during the relevant milestone.
+Use Go's standard library for JSON, file operations, embedding, and tests. Add a maintained YAML parser and HashiCorp HCL v2 (`hclwrite`, with its
+cty value types). Use `spf13/cobra` for the CLI commands and flags (milestone 4 decision: chosen by
+the user over stdlib `flag`; accepted cost is one dependency for two commands).
+Do not add an AWS SDK, templating language, or policy framework. Confirm dependency versions during the relevant milestone.
 
 ## 4. Input contracts
 
@@ -264,12 +264,15 @@ account and the same security/retention rules in v0.1.
 
 ## 7. Architecture and repository layout
 
-Two Go packages: importable `core` and the CLI's `main` package.
+Go packages: importable `core`, the CLI adapter `internal/cli` (its testable
+`Run(args, stdout, stderr) int`), and a thin `main` package. Milestone 4 decision:
+the adapter is a separate package so CLI behavior is tested without a subprocess.
 
 ```text
 cmd/stacksmith/
-  main.go                    # Arguments, bounded file reads, safe output, exit codes
-  main_test.go               # CLI/output safety checks
+  main.go                    # Thin wrapper: os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr))
+internal/cli/                # Arguments, bounded file reads, safe output, exit codes
+  *_test.go                  # CLI/output safety checks
 core/
   spec.go                    # Developer input types
   standards.go               # Platform input types and contract
@@ -328,6 +331,9 @@ Use explicit flags, no hidden config search or interactive prompts. Support
 `.yaml`, `.yml`, and `.json`; report unsupported formats. CLI handles paths, bounded
 reads, presentation, exit codes, and output. Use exit 0 for success, 1 for invalid
 input/generation/I/O failures, and 2 for command usage errors.
+
+`validate` also accepts `--format text|json` (presentation only; default `text`). JSON
+mode prints one `{"valid","diagnostics"}` object on stdout; exit codes are unchanged.
 
 Each output is self-contained:
 
