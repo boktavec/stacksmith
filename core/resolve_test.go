@@ -128,9 +128,13 @@ func TestGenerateAcceptsValidInput(t *testing.T) {
 		if len(diagnostics) != 0 {
 			t.Fatalf("Generate() diagnostics = %+v", diagnostics)
 		}
-		// Pins the stub contract; STACK-6 replaces this with non-empty output.
-		if files != nil {
-			t.Fatalf("Generate() files = %+v; want nil until STACK-6 renders", files)
+		if len(files) != len(rootFileOrder) {
+			t.Fatalf("Generate() returned %d files; want %d", len(files), len(rootFileOrder))
+		}
+		for i, file := range files {
+			if file.Path != rootFileOrder[i] || len(file.Content) == 0 {
+				t.Fatalf("Generate() file %d = %q (%d bytes); want %q non-empty", i, file.Path, len(file.Content), rootFileOrder[i])
+			}
 		}
 	}
 }
