@@ -12,7 +12,7 @@ const (
 // document. Message includes both the reason and a correction, per
 // docs/stacksmith-core-plan.md section 4's example diagnostics.
 type Diagnostic struct {
-	Document string // e.g. "bucket spec", "platform standards"
+	Document string // e.g. "blueprint spec", "platform standards"
 	Field    string // dotted path, e.g. "spec.environment"
 	Message  string
 }

@@ -1,4 +1,4 @@
-apiVersion: stacksmith/v1alpha1
+apiVersion: stacksmith/v2alpha1
 kind: PlatformStandards
 spec:
   aws:
@@ -7,7 +7,3 @@ spec:
   environments:
     - dev
     - prod
-  bucket:
-    module: s3-private/v1
-    bucketNamePrefix: acme
-    noncurrentVersionExpirationDays: 30

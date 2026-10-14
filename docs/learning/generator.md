@@ -1,3 +1,7 @@
+> **Superseded.** This page describes the removed Bucket generator. It is
+> superseded by `docs/spec/features/blueprint-catalog/SPEC.md` and will be
+> rewritten in Story 5.
+
 # Generator: usage and learning notes (Milestone 3)
 
 `core.Generate` turns a validated spec plus platform standards into the files of a

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -20,11 +19,16 @@ const (
 	objectValue valueKind = iota + 1
 	arrayValue
 	stringValue
-	integerValue
 )
 
 type documentSchema struct {
-	name     string
+	name string
+	// apiVersion and kind are the only values a document may declare for those
+	// two fields; decodeDocument checks them before the full schema walk.
+	apiVersion string
+	kind       string
+	// fields maps an object path to its allowed keys. A path mapped to an empty
+	// set allows no keys at all; a path absent from the map is not checked.
 	fields   map[string]map[string]struct{}
 	kinds    map[string]valueKind
 	required []string
@@ -36,42 +40,56 @@ type parseFailure struct {
 	line    int
 }
 
-var bucketSpecSchema = documentSchema{
-	name: "bucket spec",
+const apiVersionV2Alpha1 = "stacksmith/v2alpha1"
+
+var specSchema = documentSchema{
+	name:       "blueprint spec",
+	apiVersion: apiVersionV2Alpha1,
+	kind:       "Blueprint",
 	fields: map[string]map[string]struct{}{
 		"":         fieldSet("apiVersion", "kind", "metadata", "spec"),
 		"metadata": fieldSet("name"),
-		"spec":     fieldSet("environment", "owner"),
+		"spec":     fieldSet("blueprint", "environment", "tier", "parameters"),
+		// Empty on purpose: any parameter is an unknown field until Story 2b.
+		"spec.parameters": fieldSet(),
 	},
 	kinds: map[string]valueKind{
-		"": objectValue, "metadata": objectValue, "spec": objectValue,
+		"": objectValue, "metadata": objectValue, "spec": objectValue, "spec.parameters": objectValue,
 		"apiVersion": stringValue, "kind": stringValue, "metadata.name": stringValue,
-		"spec.environment": stringValue, "spec.owner": stringValue,
+		"spec.blueprint": stringValue, "spec.environment": stringValue, "spec.tier": stringValue,
 	},
-	required: []string{"apiVersion", "kind", "metadata.name", "spec.environment", "spec.owner"},
+	required: []string{"apiVersion", "kind", "metadata.name", "spec.blueprint", "spec.environment", "spec.tier"},
 }
 
 var standardsSchema = documentSchema{
-	name: "platform standards",
+	name:       "platform standards",
+	apiVersion: apiVersionV2Alpha1,
+	kind:       "PlatformStandards",
 	fields: map[string]map[string]struct{}{
-		"":            fieldSet("apiVersion", "kind", "spec"),
-		"spec":        fieldSet("aws", "environments", "bucket"),
-		"spec.aws":    fieldSet("accountId", "region"),
-		"spec.bucket": fieldSet("module", "bucketNamePrefix", "noncurrentVersionExpirationDays"),
+		"":         fieldSet("apiVersion", "kind", "spec"),
+		"spec":     fieldSet("aws", "environments"),
+		"spec.aws": fieldSet("accountId", "region"),
 	},
 	kinds: map[string]valueKind{
 		"": objectValue, "spec": objectValue, "spec.aws": objectValue,
-		"spec.bucket": objectValue, "apiVersion": stringValue, "kind": stringValue,
+		"apiVersion": stringValue, "kind": stringValue,
 		"spec.aws.accountId": stringValue, "spec.aws.region": stringValue,
-		"spec.environments": arrayValue, "spec.bucket.module": stringValue,
-		"spec.bucket.bucketNamePrefix":                stringValue,
-		"spec.bucket.noncurrentVersionExpirationDays": integerValue,
+		"spec.environments": arrayValue,
 	},
 	required: []string{
-		"apiVersion", "kind", "spec.aws.accountId", "spec.aws.region",
-		"spec.environments", "spec.bucket.module",
-		"spec.bucket.noncurrentVersionExpirationDays",
+		"apiVersion", "kind", "spec.aws.accountId", "spec.aws.region", "spec.environments",
 	},
+}
+
+// headerSchema knows only apiVersion and kind. With fields left nil the readers
+// skip unknown-field checks (reading a missing key from a nil map is safe in
+// Go and reports ok == false), so a wrong version or kind is reported before
+// any other problem in the document.
+func headerSchema(s documentSchema) documentSchema {
+	return documentSchema{
+		name:  s.name,
+		kinds: map[string]valueKind{"": objectValue, "apiVersion": stringValue, "kind": stringValue},
+	}
 }
 
 func fieldSet(names ...string) map[string]struct{} {
@@ -86,14 +104,8 @@ func fieldSet(names ...string) map[string]struct{} {
 // A non-empty []Diagnostic means the returned Spec is not usable.
 func ParseSpec(data []byte, format Format) (Spec, []Diagnostic) {
 	var spec Spec
-	if diagnostics := decodeDocument(data, format, bucketSpecSchema, &spec); len(diagnostics) != 0 {
+	if diagnostics := decodeDocument(data, format, specSchema, &spec); len(diagnostics) != 0 {
 		return Spec{}, diagnostics
-	}
-	if spec.APIVersion != "stacksmith/v1alpha1" {
-		return Spec{}, diagnostic(bucketSpecSchema.name, "apiVersion", fmt.Sprintf("unsupported apiVersion %q; use %q.", spec.APIVersion, "stacksmith/v1alpha1"))
-	}
-	if spec.Kind != "Bucket" {
-		return Spec{}, diagnostic(bucketSpecSchema.name, "kind", fmt.Sprintf("unsupported kind %q; use %q.", spec.Kind, "Bucket"))
 	}
 	return spec, nil
 }
@@ -106,16 +118,33 @@ func ParseStandards(data []byte, format Format) (PlatformStandards, []Diagnostic
 	if diagnostics := decodeDocument(data, format, standardsSchema, &standards); len(diagnostics) != 0 {
 		return PlatformStandards{}, diagnostics
 	}
-	if standards.APIVersion != "stacksmith/v1alpha1" {
-		return PlatformStandards{}, diagnostic(standardsSchema.name, "apiVersion", fmt.Sprintf("unsupported apiVersion %q; use %q.", standards.APIVersion, "stacksmith/v1alpha1"))
-	}
-	if standards.Kind != "PlatformStandards" {
-		return PlatformStandards{}, diagnostic(standardsSchema.name, "kind", fmt.Sprintf("unsupported kind %q; use %q.", standards.Kind, "PlatformStandards"))
-	}
-	if standards.Spec.Bucket.Module != "s3-private/v1" {
-		return PlatformStandards{}, diagnostic(standardsSchema.name, "spec.bucket.module", fmt.Sprintf("unsupported module %q; use %q.", standards.Spec.Bucket.Module, "s3-private/v1"))
-	}
 	return standards, nil
+}
+
+// readDocument runs the strict reader for format against schema and returns
+// the generic value tree.
+func readDocument(data []byte, format Format, schema documentSchema) (any, *parseFailure) {
+	switch format {
+	case FormatYAML:
+		return readYAMLDocument(data, schema)
+	case FormatJSON:
+		return readJSONDocument(data, schema)
+	default:
+		return nil, &parseFailure{message: "unsupported input format; use FormatYAML or FormatJSON."}
+	}
+}
+
+// checkHeaderValue reports a missing or unexpected string at field (apiVersion
+// or kind) in the header tree.
+func checkHeaderValue(raw any, schema documentSchema, field, want string) []Diagnostic {
+	value, ok := lookup(raw, field)
+	if !ok {
+		return diagnostic(schema.name, field, "required field is missing; provide a value.")
+	}
+	if got, _ := value.(string); got != want {
+		return diagnostic(schema.name, field, fmt.Sprintf("unsupported %s %q; use %q.", field, got, want))
+	}
+	return nil
 }
 
 func decodeDocument(data []byte, format Format, schema documentSchema, target any) []Diagnostic {
@@ -126,16 +155,21 @@ func decodeDocument(data []byte, format Format, schema documentSchema, target an
 		return diagnostic(schema.name, "", "document is not valid UTF-8; save it as UTF-8 and retry.")
 	}
 
-	var raw any
-	var failure *parseFailure
-	switch format {
-	case FormatYAML:
-		raw, failure = readYAMLDocument(data, schema)
-	case FormatJSON:
-		raw, failure = readJSONDocument(data, schema)
-	default:
-		return diagnostic(schema.name, "", "unsupported input format; use FormatYAML or FormatJSON.")
+	// Pass 1: header only, so a wrong apiVersion or kind (for example an old
+	// v1alpha1 document) is reported before unknown-field noise.
+	header, failure := readDocument(data, format, headerSchema(schema))
+	if failure != nil {
+		return failureDiagnostic(schema.name, failure)
 	}
+	if diagnostics := checkHeaderValue(header, schema, "apiVersion", schema.apiVersion); diagnostics != nil {
+		return diagnostics
+	}
+	if diagnostics := checkHeaderValue(header, schema, "kind", schema.kind); diagnostics != nil {
+		return diagnostics
+	}
+
+	// Pass 2: the full schema walk.
+	raw, failure := readDocument(data, format, schema)
 	if failure != nil {
 		return failureDiagnostic(schema.name, failure)
 	}
@@ -221,12 +255,6 @@ func inspectYAML(node *yaml.Node, path string, schema documentSchema) (any, *par
 		if expected, ok := expectedKind(path, schema); ok && expected == stringValue && node.Tag != "!!str" {
 			return nil, &parseFailure{field: path, message: "expected a string; quote or provide a string value.", line: node.Line}
 		}
-		if expected, ok := expectedKind(path, schema); ok && expected == integerValue {
-			var value int
-			if node.Tag != "!!int" || node.Decode(&value) != nil {
-				return nil, &parseFailure{field: path, message: "expected a whole number representable as a Go int; provide an integer value.", line: node.Line}
-			}
-		}
 		return node.Value, nil
 	case yaml.MappingNode:
 		if node.Tag != "!!map" {
@@ -268,7 +296,7 @@ func inspectYAML(node *yaml.Node, path string, schema documentSchema) (any, *par
 		}
 		values := make([]any, len(node.Content))
 		for i, child := range node.Content {
-			field := fmt.Sprintf("%s[%d]", path, i)
+			field := itemPath(path, i)
 			decoded, failure := inspectYAML(child, field, schema)
 			if failure != nil {
 				return nil, failure
@@ -296,7 +324,7 @@ func yamlKindMatches(node *yaml.Node, expected valueKind) bool {
 		return node.Kind == yaml.MappingNode
 	case arrayValue:
 		return node.Kind == yaml.SequenceNode
-	case stringValue, integerValue:
+	case stringValue:
 		return node.Kind == yaml.ScalarNode
 	default:
 		return true
@@ -371,7 +399,7 @@ func readJSONValue(decoder *json.Decoder, path string, schema documentSchema) (a
 	case '[':
 		values := make([]any, 0)
 		for i := 0; decoder.More(); i++ {
-			value, failure := readJSONValue(decoder, fmt.Sprintf("%s[%d]", path, i), schema)
+			value, failure := readJSONValue(decoder, itemPath(path, i), schema)
 			if failure != nil {
 				return nil, failure
 			}
@@ -403,11 +431,6 @@ func checkJSONKind(token any, path string, schema documentSchema) *parseFailure 
 		}
 	case stringValue:
 		_, matches = token.(string)
-	case integerValue:
-		if number, ok := token.(json.Number); ok {
-			_, err := strconv.ParseInt(number.String(), 10, strconv.IntSize)
-			matches = err == nil
-		}
 	}
 	if !matches {
 		return &parseFailure{field: path, message: expectedTypeMessage(expected)}
@@ -416,7 +439,8 @@ func checkJSONKind(token any, path string, schema documentSchema) *parseFailure 
 }
 
 func expectedKind(path string, schema documentSchema) (valueKind, bool) {
-	if strings.HasPrefix(path, "spec.environments[") && schema.name == standardsSchema.name {
+	// Array items are type-checked only when the schema declares the array.
+	if strings.HasPrefix(path, "spec.environments[") && schema.kinds["spec.environments"] == arrayValue {
 		return stringValue, true
 	}
 	kind, ok := schema.kinds[path]
@@ -431,8 +455,6 @@ func expectedTypeMessage(expected valueKind) string {
 		return "expected an array; provide a sequence/array value."
 	case stringValue:
 		return "expected a string; provide a string value."
-	case integerValue:
-		return "expected a whole number representable as a Go int; provide an integer value."
 	default:
 		return "value has the wrong type; use the type required by the field."
 	}
@@ -453,11 +475,27 @@ func lookup(value any, path string) (any, bool) {
 	return current, true
 }
 
+// maxFieldPathBytes bounds diagnostic field paths. Without a bound, input such
+// as "x" followed by 500,000 nested arrays would build a path that grows at
+// every level (quadratic memory) and yield a huge Field. Past the bound,
+// descendants keep their parent's path; real schema paths are far shorter.
+const maxFieldPathBytes = 256
+
 func joinField(parent, key string) string {
 	if parent == "" {
 		return key
 	}
+	if len(parent) > maxFieldPathBytes {
+		return parent
+	}
 	return parent + "." + key
+}
+
+func itemPath(parent string, index int) string {
+	if len(parent) > maxFieldPathBytes {
+		return parent
+	}
+	return fmt.Sprintf("%s[%d]", parent, index)
 }
 
 func failureDiagnostic(document string, failure *parseFailure) []Diagnostic {

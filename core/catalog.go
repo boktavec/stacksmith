@@ -67,13 +67,9 @@ type CatalogEntry struct {
 // Catalog lists the blueprints in the embedded snapshot, sorted by ID. It
 // decodes the embedded bytes on each call and keeps no global state.
 func Catalog() ([]CatalogEntry, error) {
-	data, err := snapshotFS.ReadFile(catalogPath)
+	file, err := loadCatalog()
 	if err != nil {
-		return nil, fmt.Errorf("read embedded catalog: %w", err)
-	}
-	file, err := decodeCatalog(data)
-	if err != nil {
-		return nil, fmt.Errorf("embedded catalog is invalid: %w", err)
+		return nil, err
 	}
 	entries := make([]CatalogEntry, 0, len(file.Blueprints))
 	for id, blueprint := range file.Blueprints {
@@ -82,6 +78,31 @@ func Catalog() ([]CatalogEntry, error) {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
 	return entries, nil
+}
+
+// loadCatalog reads and decodes the embedded snapshot.
+func loadCatalog() (catalogFile, error) {
+	data, err := snapshotFS.ReadFile(catalogPath)
+	if err != nil {
+		return catalogFile{}, fmt.Errorf("read embedded catalog: %w", err)
+	}
+	file, err := decodeCatalog(data)
+	if err != nil {
+		return catalogFile{}, fmt.Errorf("embedded catalog is invalid: %w", err)
+	}
+	return file, nil
+}
+
+// mustLoadCatalog is for callers that cannot return an error (Validate). By Go
+// convention a Must... function panics only for a broken invariant, never for
+// user input: here the embedded snapshot is fixed at build time, so a failure
+// is a build defect.
+func mustLoadCatalog() catalogFile {
+	file, err := loadCatalog()
+	if err != nil {
+		panic("embedded catalog snapshot is invalid (build defect): " + err.Error())
+	}
+	return file
 }
 
 // decodeCatalog strictly decodes exactly one catalog document. yaml.v3 rejects

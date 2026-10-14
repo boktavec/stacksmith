@@ -1,24 +1,27 @@
 package core
 
-// Spec is a developer-authored bucket specification: one file, one bucket.
-// See docs/stacksmith-core-plan.md section 4 for the agreed input contract.
+// Spec is a developer-authored Blueprint document: one file, one blueprint
+// instance. See docs/spec/features/blueprint-catalog/SPEC.md section 4.
 type Spec struct {
-	APIVersion string       `yaml:"apiVersion" json:"apiVersion"`
-	Kind       string       `yaml:"kind" json:"kind"`
-	Metadata   SpecMetadata `yaml:"metadata" json:"metadata"`
-	Spec       BucketSpec   `yaml:"spec" json:"spec"`
+	APIVersion string        `yaml:"apiVersion" json:"apiVersion"`
+	Kind       string        `yaml:"kind" json:"kind"`
+	Metadata   SpecMetadata  `yaml:"metadata" json:"metadata"`
+	Spec       BlueprintSpec `yaml:"spec" json:"spec"`
 }
 
-// SpecMetadata holds the developer's logical name for the bucket. It is not
-// the final AWS bucket name.
+// SpecMetadata holds the developer's name for this blueprint instance.
 type SpecMetadata struct {
 	Name string `yaml:"name" json:"name"`
 }
 
-// BucketSpec is the developer-controlled portion of the contract: intent,
-// not implementation. There are no fields here for security, encryption,
-// retention, tags, module source, account, or region.
-type BucketSpec struct {
-	Environment string `yaml:"environment" json:"environment"`
-	Owner       string `yaml:"owner" json:"owner"`
+// BlueprintSpec is the developer-controlled portion of the contract: which
+// catalog blueprint, in which environment, at which tier. Parameters is always
+// empty in Story 2a (the parser rejects any entry); Story 2b fills it in.
+// A nil map and an empty map differ under reflect.DeepEqual, so callers
+// should test len(Parameters), not nil-ness.
+type BlueprintSpec struct {
+	Blueprint   string            `yaml:"blueprint" json:"blueprint"`
+	Environment string            `yaml:"environment" json:"environment"`
+	Tier        string            `yaml:"tier" json:"tier"`
+	Parameters  map[string]string `yaml:"parameters" json:"parameters"`
 }

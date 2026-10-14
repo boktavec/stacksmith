@@ -88,7 +88,7 @@ func newValidateCmd(stdout, stderr io.Writer, exitCode *int) *cobra.Command {
 	var specPath, standardsPath, format string
 	cmd := &cobra.Command{
 		Use:   "validate --spec <file> --standards <file>",
-		Short: "Check a spec against platform standards without generating anything",
+		Short: "Check a blueprint spec against platform standards without generating anything",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			// Check --format first so a bad format is a usage error even
@@ -115,7 +115,7 @@ func newValidateCmd(stdout, stderr io.Writer, exitCode *int) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&specPath, "spec", "", "path to the bucket spec (.yaml, .yml or .json)")
+	cmd.Flags().StringVar(&specPath, "spec", "", "path to the blueprint spec (.yaml, .yml or .json)")
 	cmd.Flags().StringVar(&standardsPath, "standards", "", "path to the platform standards (.yaml, .yml or .json)")
 	cmd.Flags().StringVar(&format, "format", "text", "output format: text or json")
 	_ = cmd.MarkFlagRequired("spec")      // only errors if the flag is undefined
