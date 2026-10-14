@@ -79,8 +79,13 @@ func Validate(spec Spec, standards PlatformStandards) []Diagnostic {
 		// The tier is meaningful only for a blueprint we can resolve.
 		if _, ok := entry.Tiers[spec.Spec.Tier]; !ok {
 			add(specSchema.name, "spec.tier", fmt.Sprintf("tier %q is not defined for blueprint %q; use one of: %s.", spec.Spec.Tier, id, strings.Join(sortedKeys(entry.Tiers), ", ")))
+		} else {
+			// The merged map is for Story 3's renderer; Validate wants only the problems.
+			_, parameterDiagnostics := resolveParameters(spec, standards, entry)
+			diagnostics = append(diagnostics, parameterDiagnostics...)
 		}
 	}
+	diagnostics = append(diagnostics, validateOverrides(standards.Spec.BlueprintOverrides, catalog)...)
 
 	return diagnostics
 }

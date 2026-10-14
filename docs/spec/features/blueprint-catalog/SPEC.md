@@ -343,6 +343,16 @@ Every story gets a focused implementation context, builds on its predecessor, ke
 - YAML and JSON forms are equivalent.
 - `go test ./...`, `go vet ./...`, and `go build ./...` pass.
 
+**Clarifications (planner review, 2b):**
+- **Parser:** add one wildcard path segment (`*`) to the parser's field/kind tables. `spec.parameters.*` is a string, so an unquoted YAML number/boolean fails at parse time. Policy `minimum`/`maximum` use a new integer kind: YAML `!!int` or JSON number matching `^-?(0|[1-9][0-9]*)$` only, plus an `Atoi` range check (reject `2.0`, `2e0`, `0x2`, overflow, and leading zeros: yaml.v3 decodes `010` as octal 8; `-0` parses but then fails the intrinsic bounds). Store bounds as `*int`; `allowed` as `*[]string` so `[]` is distinguishable from absent (verify yaml.v3 nil-vs-empty with a test).
+- **Where checks live:** the parser accepts any key; `Validate` rejects unknown parameter names, blueprint IDs and tiers (catalog-dependent) and checks the whole `blueprintOverrides` block, not only the selected tier.
+- **Resolved map:** unexported `resolveParameters(spec, standards, entry) (map[string]string, []Diagnostic)`; `Validate` calls it and discards the map; Story 3 reuses it. No public API change.
+- **Diagnostic paths:** `spec.parameters.<name>`; policy `spec.blueprintOverrides.<id>.tiers.<tier>.parameters.<name>.minimum` / `.allowed[i]`. Iterate map keys in sorted order for stable output.
+- **Presets vs. policy:** policy constrains overrides only; a preset is never checked against policy. A value equal to the preset is still an override and needs a policy. A preset must contain exactly the schema keys; an invalid preset yields a diagnostic with Document `"catalog snapshot"` (fail closed, no panic).
+- **Policy rules:** `minimum` or `maximum` alone is allowed; bounds inclusive; `allowed` entries are strings (`["2"]`); empty `blueprintOverrides`/`tiers`/`parameters` maps equal absent.
+- **Existing tests/docs:** invert the 2a tests that treat `spec.parameters` as an unknown field (`core/core_test.go`) and that reject `blueprintOverrides`; update the "always empty in Story 2a" comment in `core/spec.go`; update `examples/standards.yaml` and `examples/network.yaml` to the section 4 example (az_count policy 2-3, value `"3"`) and the CLI example tests.
+- **PR size:** ship as one PR; if the diff exceeds ~500 lines, split into 2b-1 (parser, types, schema, preset and policy-definition validation) and 2b-2 (override checks, resolved map, hostile strings, equivalence, examples).
+
 ### Story 3: resolve and render the `network` workspace
 
 **Goal:** Produce deterministic Terraform files from a validated `network` spec using the pinned template and module.

@@ -15,10 +15,10 @@ type SpecMetadata struct {
 }
 
 // BlueprintSpec is the developer-controlled portion of the contract: which
-// catalog blueprint, in which environment, at which tier. Parameters is always
-// empty in Story 2a (the parser rejects any entry); Story 2b fills it in.
-// A nil map and an empty map differ under reflect.DeepEqual, so callers
-// should test len(Parameters), not nil-ness.
+// catalog blueprint, in which environment, at which tier. Parameters holds the
+// developer's overrides of the tier preset; Validate checks them against the
+// platform standards. A nil map and an empty map differ under
+// reflect.DeepEqual, so callers should test len(Parameters), not nil-ness.
 type BlueprintSpec struct {
 	Blueprint   string            `yaml:"blueprint" json:"blueprint"`
 	Environment string            `yaml:"environment" json:"environment"`
