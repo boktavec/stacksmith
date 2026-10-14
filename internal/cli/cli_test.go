@@ -6,8 +6,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/boktavec/stacksmith/core"
 )
 
 const (
@@ -138,6 +141,10 @@ func TestRunUsageErrorsExitTwoWithNothingOnStdout(t *testing.T) { // AC5
 		"completion":          {"completion"},
 		"extra arg":           {"validate", "--spec", exampleSpec, "--standards", exampleStandards, "extra"},
 		"no subcommand":       {},
+		"catalog alone":       {"catalog"},
+		"catalog extra arg":   {"catalog", "list", "extra"},
+		"catalog unknown sub": {"catalog", "foo"},
+		"catalog list flag":   {"catalog", "list", "--format", "json"},
 		"bad format":          {"validate", "--spec", exampleSpec, "--standards", exampleStandards, "--format", "yaml"},
 		"bad format first":    {"validate", "--spec", "missing.yaml", "--standards", exampleStandards, "--format", "yaml"},
 	} {
@@ -429,5 +436,74 @@ func TestErrorsEscapeControlCharacters(t *testing.T) { // R4
 				t.Fatalf("escape missing: %q", stderr)
 			}
 		})
+	}
+}
+
+const catalogHeader = "BLUEPRINT"
+
+func TestCatalogListShowsSnapshotBlueprints(t *testing.T) {
+	code, stdout, stderr := run(t, "catalog", "list")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	if len(lines) != 8 {
+		t.Fatalf("want header + 7 rows, got %d lines:\n%s", len(lines), stdout)
+	}
+	if fields := strings.Fields(lines[0]); !slices.Equal(fields, []string{catalogHeader, "STATUS", "SUMMARY"}) {
+		t.Fatalf("header = %q", lines[0])
+	}
+	wantIDs := []string{"argocd", "bastion", "dns", "eks", "network", "rds", "s3-event-worker"}
+	for i, id := range wantIDs {
+		row := lines[i+1]
+		if !strings.HasPrefix(row, id+" ") {
+			t.Errorf("row %d = %q, want ID %q", i, row, id)
+		}
+		wantStatus := "not yet supported"
+		if id == "network" {
+			wantStatus = "supported"
+		}
+		if rest := strings.TrimSpace(strings.TrimPrefix(row, id)); !strings.HasPrefix(rest, wantStatus+"  ") {
+			t.Errorf("row %d = %q, want status %q", i, row, wantStatus)
+		}
+	}
+}
+
+func TestCatalogBareCommandNamesSubcommand(t *testing.T) {
+	_, _, stderr := run(t, "catalog")
+	if want := "error: a subcommand is required; use \"catalog list\"\n"; stderr != want {
+		t.Fatalf("stderr=%q want %q", stderr, want)
+	}
+	_, _, stderr = run(t)
+	if want := "error: a command is required; use \"validate\" or \"catalog list\"\n"; stderr != want {
+		t.Fatalf("stderr=%q want %q", stderr, want)
+	}
+}
+
+func TestCatalogListWriteFailureExitsOne(t *testing.T) {
+	var errOut bytes.Buffer
+	code := Run([]string{"catalog", "list"}, failingWriter{}, &errOut)
+	if code != 1 || !strings.Contains(errOut.String(), "cannot write output") {
+		t.Fatalf("code=%d stderr=%q", code, errOut.String())
+	}
+}
+
+func TestWriteCatalogEscapesControlCharacters(t *testing.T) {
+	var out bytes.Buffer
+	err := writeCatalog(&out, []core.CatalogEntry{{ID: "x\x1b[31m", Summary: "evil\x1b[2J\nsecond line", Supported: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("hostile newline split the row: %q", out.String())
+	}
+	for _, b := range []byte(strings.TrimSuffix(out.String(), "\n")) {
+		if (b < 0x20 && b != '\n') || b == 0x7f {
+			t.Fatalf("raw control byte %#x in %q", b, out.String())
+		}
+	}
+	if !strings.Contains(lines[1], `x\x1b[31m`) || !strings.Contains(lines[1], `evil\x1b[2J\nsecond line`) {
+		t.Fatalf("escaped text missing: %q", lines[1])
 	}
 }

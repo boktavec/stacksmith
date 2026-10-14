@@ -1,536 +1,414 @@
 # StackSmith Core v0.1 — implementation plan
 
-Status: approved; milestones 1 and 2 (parse and validate) are complete.
-Branch: `feature/spec-parse-validate`.
+Status: approved. Amended 2026-10-13 for the approved catalog-backed blueprint
+feature (`docs/spec/features/blueprint-catalog/SPEC.md`, YouTrack STACK-19). That
+pivot replaces the original S3-bucket generator with catalog-backed `network`
+blueprint generation.
 
-Product choices below were agreed through one-question-at-a-time discussion.
-The detailed implementation contracts, checks, and milestone sequence are the
-proposed synthesis for final review. Implement incrementally after approval,
-explaining Terraform and architecture as each milestone is introduced.
+The original S3 milestones (1 Terraform foundation, 2 parse/validate, 3 generator,
+and the CLI `validate` command from milestone 4) are complete and remain in Git history. Their
+Bucket-specific contract is superseded; see section 12. The feature spec is
+authoritative for the details of the blueprint contract. This plan holds the
+product-level design and the rules that still apply.
 
 ## 1. Goal and success criteria
 
 StackSmith Core is a small, offline compiler from infrastructure intent and
-platform standards to readable Terraform using an approved module:
+platform standards to readable Terraform, using reviewed company blueprints:
 
 ```text
-Developer spec + platform standards
+Blueprint spec + platform standards + embedded catalog snapshot
   -> strict parsing
-  -> schema and semantic validation
-  -> resolve platform values and permitted developer inputs
-  -> select the approved module
-  -> generate Terraform root configuration + copy the module
+  -> catalog lookup, schema and semantic validation
+  -> merge the catalog tier preset with standards-approved overrides
+  -> execute the reviewed embedded blueprint template
+  -> return the Terraform root files + vendored blueprint module
 ```
 
-The first infrastructure type is one private AWS S3 bucket per specification.
-Start with a hand-written Terraform module and root configuration before writing
-the Go generator. S3 teaches resources, modules, providers, state, and lifecycle
-without first requiring a VPC, subnets, or a database's ongoing costs.
+The blueprints come from FoggyOps' `foggy-blueprints` repository: a catalog
+(`catalog.yaml`), Go `text/template` root templates, and hand-authored Terraform
+modules. StackSmith bundles a manually refreshed, pinned snapshot of it (commit
+`ed819adb2c5c71790c41a0510f604b38f1c9a6ed`) and never fetches it at runtime.
+The first and only generated blueprint is `network` (a VPC over
+`terraform-aws-modules/vpc`). Every catalog entry is listed, and the CLI marks
+which ones StackSmith can generate.
 
 v0.1 succeeds when:
 
+- `stacksmith catalog list` shows every snapshot entry and its support status, offline.
 - Equivalent YAML and JSON inputs produce byte-identical named files using the
-  same StackSmith build and bundled module.
-- Invalid inputs explain what is wrong and why, and produce no output files.
-- Output uses the approved S3 module and passes Terraform formatting and validation.
-- Tests cover security invariants, platform override rejection, deterministic
-  generation, and refusal to overwrite existing workspaces.
-- The user can inspect the output and manually initialize, plan, apply, and
-  destroy an empty sandbox bucket. Real AWS execution requires separate user
-  authorization and credentials; automated checks do not deploy resources.
+  same StackSmith build and bundled snapshot.
+- Invalid or unsupported inputs explain what is wrong and why, and produce no output files.
+- Generated `network` workspaces pass `terraform fmt -check` and `terraform validate`.
+- Tests cover security invariants (override policy, template-injection safety,
+  account guard), deterministic generation, and refusal to overwrite existing workspaces.
+- Generation never accesses AWS. Any real AWS execution requires separate user
+  authorization and credentials. Automated checks do not deploy resources.
 
 ## 2. Exact v0.1 scope
 
 ### Included
 
-- Go core library and thin CLI with `validate` and `generate` commands.
+- Go core library and thin CLI with `catalog list`, `validate`, and `generate`.
 - Strict YAML and JSON for both developer specs and platform standards.
-- One `Bucket` kind and one version-controlled standards document.
-- One bundled, approved module identified by `s3-private/v1`.
-- One platform-selected AWS account and region; initially `us-east-2` (Ohio).
-- Initial allowed environments `dev` and `prod`, sharing identical rules and
-  the same account. The allowed list is platform configuration, not hardcoded.
-- Fixed security/tag contract, platform-controlled expiration and naming prefix.
-- Readable, self-contained Terraform output, one root directory per bucket.
+- One generic `Blueprint` kind (`stacksmith/v2alpha1`) and one version-controlled
+  `PlatformStandards` document.
+- An embedded, pinned `foggy-blueprints` snapshot with a SHA-256 manifest. It holds
+  the full catalog, and only the `network` template and module.
+- One platform-selected AWS account and region (for example, `us-east-2`).
+- Platform-owned allowed environments. Catalog tiers (`dev`, `prod`) are separate
+  from environments.
+- Tier presets from the catalog, plus typed, standards-approved per-tier parameter overrides.
+- Generated workspace layout `roots/<name>/` + `modules/foggy-network/`.
 - Focused automated checks and incremental Terraform learning documentation.
 
 ### Excluded
 
 - AI, MCP, APIs, SaaS, multi-tenancy, frontend, GitHub, and Atlantis integrations.
-- Terraform execution, AWS calls, credential handling, state management, drift
-  detection, imports, deployment orchestration, and automated migrations.
-- Complete Application abstractions, databases, networking, IAM access grants,
-  other cloud providers, or additional infrastructure kinds.
-- Remote module distribution, arbitrary module sources, registries, plugins,
-  independent company-module releases, and general-purpose policy engines.
-- Standards inheritance/profiles, per-environment rules/accounts, multi-region
-  provider aliases, arbitrary naming templates, custom tags, and escape hatches.
+- Terraform execution by StackSmith, AWS calls, credential handling, state
+  management, drift detection, imports, deployment orchestration, and automated migrations.
+- Generating any catalog entry other than `network`. Also excluded: multi-root dependency
+  graphs, SSM producer/consumer orchestration, and cross-root state.
+- Changes to `foggy-blueprints`, remote catalog fetching or sync, Git submodules,
+  user-defined templates, arbitrary module sources, plugins, and general-purpose
+  policy engines.
+- Vendoring third-party Registry modules (`terraform-aws-modules/vpc/aws`) into output.
+- Standards inheritance/profiles, per-environment accounts, multi-region provider
+  aliases, custom tags, and escape hatches.
 - Automatic workspace updates, overwrite/force options, backend generation,
   remote state setup, Terraform workspace management, or generated secrets.
-- Customer-managed KMS keys, Object Lock, replication, independent backups,
-  current-object expiration, and stronger deletion-protection controls.
+- Compatibility with the old `stacksmith/v1alpha1` `Bucket` spec, or keeping the S3
+  generator as a second path.
 
 ## 3. Language and dependencies
 
 Use **Go**, as agreed. It supports a typed library and portable compiled CLI,
-fits the user's Go learning goal, and has HashiCorp's native HCL tooling for
-safe Terraform generation and formatting.
+fits the user's Go learning goal, and has HashiCorp's native HCL tooling.
 
-TypeScript offers familiar types/tooling but requires a JavaScript runtime or
-packaging step. Python is convenient for prototyping but offers less compile-time
-checking. Both work; neither is substantially better for this small generator.
-Go's learning cost is real, so use ordinary functions and two packages rather
-than frameworks or speculative interfaces.
-
-Use Go's standard library for JSON, file operations, embedding, and tests. Add a maintained YAML parser and HashiCorp HCL v2 (`hclwrite`, with its
-cty value types). Use `spf13/cobra` for the CLI commands and flags (milestone 4 decision: chosen by
-the user over stdlib `flag`; accepted cost is one dependency for two commands).
-Do not add an AWS SDK, templating language, or policy framework. Confirm dependency versions during the relevant milestone.
+Use Go's standard library for JSON, file operations, embedding, and tests. Use the
+standard library's `text/template` only to execute the trusted, embedded upstream
+blueprint template unchanged. Developer values are template *data*, never template
+source. Use a maintained YAML parser (`gopkg.in/yaml.v3`) and HashiCorp HCL v2
+(`hclwrite`, with cty) where StackSmith writes its own HCL. Use `spf13/cobra` for
+the CLI commands and flags (milestone 4 decision: the user chose it over stdlib `flag`). Do not add an AWS SDK,
+third-party templating language, or policy framework. Confirm dependency versions
+in the relevant story.
 
 ## 4. Input contracts
 
-### Developer specification — agreed
+The exact contract is in the blueprint-catalog spec, section 4. In summary:
+
+### Developer Blueprint document
 
 ```yaml
-apiVersion: stacksmith/v1alpha1
-kind: Bucket
+apiVersion: stacksmith/v2alpha1
+kind: Blueprint
 metadata:
-  name: orders-assets
+  name: shared-network
 spec:
+  blueprint: network
   environment: dev
-  owner: orders-team
+  tier: dev
+  parameters:
+    az_count: "3"   # optional; strings only; must be allowed by standards
 ```
 
-Each file describes exactly one bucket. `metadata.name` is a logical name, not
-the final AWS bucket name. `owner` describes responsibility; it is not an
-identity assertion or authorization grant. There are no developer fields for
-public access, encryption, retention, tags, module source, account, or region.
+Each file describes exactly one blueprint instance. `metadata.name` is a
+lowercase ASCII slug of at most 63 characters. It is used as the instance name, the root
+directory `roots/<name>/`, and the SSM publish prefix `/foggy/network/<name>/`.
+`spec.blueprint` must exist in the bundled catalog. Known entries other than
+`network` fail as unsupported, and unknown IDs fail as unknown. `tier` must be a tier of
+that catalog entry. `environment` must be allowed by standards; it is a tag value,
+not a tier alias. There are no developer fields for module source, provider
+version, account, region, tags, template path, or output path.
 
 `apiVersion` versions StackSmith's input contract, not Terraform or AWS.
 
-### Platform standards — agreed
+### Platform standards
 
 ```yaml
-apiVersion: stacksmith/v1alpha1
+apiVersion: stacksmith/v2alpha1
 kind: PlatformStandards
 spec:
   aws:
     accountId: "123456789012" # Example only; replace before Terraform execution
     region: us-east-2
-  environments:
-    - dev
-    - prod
-  bucket:
-    module: s3-private/v1
-    bucketNamePrefix: acme   # Optional; illustrative, not a chosen company prefix
-    noncurrentVersionExpirationDays: 30
+  environments: [dev, prod]
+  blueprintOverrides:         # optional; absent = no overrides
+    network:
+      tiers:
+        dev:
+          parameters:
+            az_count: {minimum: 2, maximum: 3}
 ```
 
-The platform owns and reviews this document and the approved module. All fields
-shown are required except `bucketNamePrefix`, which defaults to empty. There
-are no implicit account, region, owner, environment, or expiration defaults.
-The initial policy value is 30 days, but the platform may change it; developers
-cannot override it.
-
-Selecting the module selects its fixed security and tag contract. Do not repeat
-these invariants as configurable booleans or a generic tag-mapping language.
-Company customization in v0.1 is intentionally limited to this typed contract.
+The platform owns and reviews this document. StackSmith owns the parameter types
+(`network`: `cidr` IPv4 CIDR, `az_count` integer, `single_nat` boolean). It also
+enforces the module's own limits: `az_count` 1–8, and a CIDR from /16 to /24 in
+canonical network form. Standards can only enable and constrain overrides per supported
+blueprint, tier, and parameter, using `minimum`/`maximum` (`az_count` only), an
+`allowed` list, or `{}` (any value within the limits). A parameter with no policy cannot be
+overridden. Catalog presets are validated against the same schema.
 
 ### Strict parsing and validation
 
 Both formats decode into the same Go types and use the same semantic validator.
 Accept one document/object per file. Reject unknown and duplicate keys at every
 level, trailing documents/data, wrong types, missing required fields, nulls in
-place of required values, unsupported kinds/versions, and unsupported module IDs.
-Do not silently coerce types, drop fields, trim names, or truncate identifiers.
+place of required values, and unsupported kinds/versions. Do not silently coerce
+types, drop fields, trim names, or truncate identifiers. Parameter values are
+strings: `az_count: 3` (YAML integer) is a type error, so write `"3"`. Empty and
+non-canonical values are rejected, never normalized.
 
 Keep YAML JSON-compatible: string mapping keys; no aliases, merge keys, or custom
-tags. Use parser facilities to detect duplicates and coercions rather than
-assuming a decoder's defaults are strict. JSON duplicate-key detection also
-needs explicit handling; Go's ordinary struct decoding alone is insufficient.
-Bound input size before parsing (proposed limit: 1 MiB per document).
+tags. Use parser facilities to detect duplicates and coercions. JSON duplicate-key
+detection needs explicit handling. Bound input size before parsing (1 MiB per
+document). The embedded catalog is trusted, reviewed content. It is decoded with
+`yaml.v3` `KnownFields(true)` into structs, and its correctness is enforced by tests.
 
-Proposed semantic rules:
+Semantic rules:
 
-- Names, nonempty prefixes, and environment entries use lowercase ASCII slugs:
-  letters/digits separated by single hyphens, starting and ending alphanumeric.
-- The fully composed bucket name must satisfy S3 naming restrictions, including
-  reserved prefixes/suffixes and the 63-character limit. Reject, never truncate.
+- Names and environment entries use lowercase ASCII slugs: letters/digits
+  separated by single hyphens, starting and ending alphanumeric.
 - Allowed environments form a nonempty list without duplicates; the selected
   environment must belong to it.
 - Account ID is a string of exactly 12 ASCII digits, preserving leading zeros.
 - Region must have valid AWS region-code syntax. Availability, opt-in status,
-  name availability, account existence, and permissions are not checked offline.
-- Owner is nonblank, has no control characters or surrounding whitespace, and
-  fits S3's tag-value length limit. Apply tag limits to all emitted values.
-- Expiration days must be a positive whole number representable by the chosen
-  Go integer type; reject fractional values and overflow.
+  AZ count, CIDR overlap, account existence, and permissions are not checked offline.
 
 Diagnostics carry document identity, field path, reason, and a helpful correction;
-include source location when available. Keep diagnostic ordering stable. Example:
+include source location when available. Keep diagnostic ordering stable.
 
-```text
-bucket spec: spec.public: unknown field; s3-private/v1 is private-only.
-bucket spec: spec.environment: "staging" is not allowed; expected dev or prod.
-```
-
-## 5. Standards, modules, validation, and output boundaries
+## 5. Standards, blueprints, validation, and output boundaries
 
 | Layer | Responsibility | Not its responsibility |
 | --- | --- | --- |
-| Platform standards | Select approved module, account/region, allowed environments, prefix, expiration | Arbitrary executable policies or developer overrides |
-| Terraform child module | AWS resources, fixed security/tag invariants, lifecycle implementation, input checks | Credentials, provider configuration, backend/state ownership |
-| Core validation | Strict input contract, standards validation, permitted values, safe names, override rejection | Proving live AWS compliance or checking credentials |
-| Generated root module | Configure provider, pass resolved inputs, call approved module, expose outputs | Reimplement the module's AWS resources |
-| Terraform CLI/provider | Resolve data sources, plan/apply changes, track state, check account and AWS constraints | Decide StackSmith's developer-facing contract |
+| Catalog snapshot (upstream, pinned) | Blueprint IDs, summaries, tier presets, provider constraints, template, module logic | StackSmith's input contract or policy |
+| Platform standards | Account/region, allowed environments, per-tier override policy | Arbitrary executable policies |
+| Terraform child module (`modules/foggy-network`) | AWS resources (VPC, subnets, NAT, flow logs, SSM publishes) | Credentials, provider configuration, backend/state ownership |
+| Core validation | Strict contract, catalog lookup, typed parameters, policy enforcement, safe names/strings | Proving live AWS compliance or checking credentials |
+| Generated root module | Configure the provider, call the module (wiring only), account guard, outputs | Reimplement the module's AWS resources |
+| Terraform CLI/provider | Resolve data sources, plan/apply changes, track state, check the account | Decide StackSmith's developer-facing contract |
 
-Platform policy means infrastructure rules. An S3 bucket policy is specifically
-an AWS permissions document; it is one mechanism used to implement those rules.
+Template safety: the upstream `quote` helper is Go `%q`, not an HCL escaper, and
+`az_count`/`single_nat` sit in unquoted HCL positions. Every string reaching the
+template must therefore match `^[A-Za-z0-9./-]+$`. Validation guarantees this, and
+the renderer re-checks it, failing closed.
 
-### Approved S3 contract
-
-- All four S3 Block Public Access settings enabled; no public-mode input.
-- Bucket-owner-enforced ownership, disabling ACLs.
-- Explicit SSE-S3 default encryption, not customer-managed KMS.
-- Bucket policy denying non-TLS access to the bucket and its objects.
-- Versioning enabled, with no disable switch.
-- Noncurrent versions expire after the platform-provided period (initially 30 days).
-- Explicit `force_destroy = false`, with no override, in both environments.
-- Four required tags, with no arbitrary developer tag map:
-
-| Tag | Source |
-| --- | --- |
-| `Name` | Developer's logical name |
-| `Environment` | Validated developer environment |
-| `Owner` | Developer's owning team |
-| `ManagedBy` | Fixed module value `stacksmith` |
-
-Proposed child-module inputs: `bucket_name`, `name` (logical name), `environment`,
-`owner`, and `noncurrent_version_expiration_days`. The module constructs the tag
-map itself. Validate its inputs too, since the hand-written root calls it without
-StackSmith. Expose `bucket_name` and `bucket_arn` as child and root outputs.
-
-Use the AWS provider's separate resources for bucket configuration where required:
-bucket, public access block, ownership controls, encryption, versioning, lifecycle,
-and bucket policy. The lifecycle configuration must follow versioning enablement.
-Explain each resource rather than hiding it behind generated code.
-
-### Important S3 semantics
-
-- Private means no public access, not VPC-only access. Authorized identities may
-  still reach S3's public service endpoints; access grants are outside this MVP.
-- Expiration is measured from when a version becomes noncurrent, not original
-  upload time. Deletion is asynchronous and permanent for eligible old versions.
-  This rule does not expire current versions or promise an exact deletion time.
-- Versioning is not independent backup or guaranteed minimum retention. Users
-  with sufficient permissions can permanently delete versions sooner.
-- `force_destroy = false` prevents Terraform from automatically emptying a bucket.
-  Empty buckets can still be destroyed. Cleaning a versioned bucket requires
-  deliberately removing all versions and delete markers, not just visible objects.
-- This is not `prevent_destroy`, Object Lock, or organization-wide deletion
-  protection. The lifecycle rule still deletes eligible noncurrent versions.
+Tags passed to the module are fixed by StackSmith: `managed-by=stacksmith`,
+`blueprint=network`, `Environment=<environment>`. Unlike foggy-cli, which sets
+`Environment` to the tier, StackSmith keeps environment and tier distinct.
 
 ## 6. Naming and account safeguards
 
-Agreed naming convention:
+The instance name is the developer's `metadata.name`. The VPC name and the SSM
+paths derive from it in the module (`/foggy/network/<name>/<key>`). Renaming an
+instance changes infrastructure identity; it is a migration, not a label edit.
 
-```text
-[<prefix>-]<name>-<environment>-<account-id>-<region>
-acme-orders-assets-dev-123456789012-us-east-2
-```
-
-The optional prefix belongs to platform standards. Component ordering is fixed;
-changing that pattern requires a code change in v0.1. No randomness or silent
-shortening. The `Name` tag remains the logical name.
-
-The generated root uses Terraform's `aws_caller_identity` data source to read
-the executing account ID. StackSmith emits the expression without accessing AWS.
-The region comes from standards. Configure the AWS provider with
-`allowed_account_ids` containing the expected account ID so wrong-account
-credentials fail during Terraform execution. The child inherits this provider.
+The generated root configures the AWS provider with the standards region and
+`allowed_account_ids` containing the expected account ID, so wrong-account
+credentials fail during Terraform execution. This is the primary safeguard. As
+defense in depth, `account_guard.tf` reads `aws_caller_identity` and puts a
+precondition on an `aws_account_id` output. StackSmith emits these expressions
+without accessing AWS.
 
 An account ID is an identifier, not a credential. Credentials come from the
-user's normal AWS authentication setup and are never generated or stored here.
-Initial support targets the standard commercial AWS partition.
-
-S3 names are shared across accounts and regions within a partition. Including
-account and region reduces collisions but does not reserve names or guarantee
-availability. Changing prefix, logical name, environment, account, or region
-can change infrastructure identity and require replacement; it is a migration,
-not a harmless label edit.
-
-`dev` and `prod` are metadata, not account isolation. Both use the one configured
-account and the same security/retention rules in v0.1.
+user's normal AWS authentication and are never generated or stored here.
+Initial support targets the standard commercial AWS partition. Environments are
+metadata, not account isolation.
 
 ## 7. Architecture and repository layout
 
 Go packages: importable `core`, the CLI adapter `internal/cli` (its testable
-`Run(args, stdout, stderr) int`), and a thin `main` package. Milestone 4 decision:
-the adapter is a separate package so CLI behavior is tested without a subprocess.
+`Run(args, stdout, stderr) int`), and a thin `main` package.
 
 ```text
-cmd/stacksmith/
-  main.go                    # Thin wrapper: os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr))
-internal/cli/                # Arguments, bounded file reads, safe output, exit codes
-  *_test.go                  # CLI/output safety checks
+cmd/stacksmith/main.go          # os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr))
+internal/cli/                   # Arguments, bounded reads, safe output, exit codes
 core/
-  spec.go                    # Developer input types
-  standards.go               # Platform input types and contract
-  parse.go                   # Strict YAML/JSON decoding
-  validate.go                # Validation and internal resolved configuration
-  generate.go                # HCL generation and embedded module assets
-  core_test.go               # Focused checks; golden fixtures only as needed
-  modules/s3/
-    main.tf                  # Canonical Terraform source, not a generated copy
-    variables.tf
-    outputs.tf
-    versions.tf
-    tests/                   # Native Terraform module-contract tests
+  spec.go, standards.go         # v2alpha1 input types
+  parse.go                      # Strict YAML/JSON decoding of user documents
+  validate.go                   # Validation, typed parameters, override policy
+  catalog.go                    # Embedded catalog decoding, supported table
+  generate.go                   # Resolution, template execution, StackSmith-owned HCL
+  snapshot/foggy-blueprints/
+    MANIFEST                    # Upstream URL, commit SHA, per-file SHA-256
+    catalog.yaml
+    templates/network.tf.tmpl
+    modules/network/{main,variables,outputs}.tf
 examples/
-  bucket.yaml
-  bucket.json
-  standards.yaml
-  manual-root/               # Hand-written root used before the Go generator
-    ...
+  network.yaml, network.json, standards.yaml
 docs/
-  stacksmith-core-plan.md
-  ...                        # Small learning guides added with milestones
-go.mod
-go.sum
-.gitignore
-README.md
-LICENSE
+  stacksmith-core-plan.md, spec/features/, learning/
 ```
 
-Create files only as their milestone needs them. No scaffolding all packages now.
-The manual root references the canonical module; Go embeds those same `.tf` files
-from `core/modules/s3/`. Tests are not copied into generated deployments.
-
-Core exposes ordinary parsing, validation, and generation functions operating on
-supplied bytes/typed values and returning structured diagnostics or named file
-contents. Final signatures can be chosen when implementing the small public API.
-No terminal, environment-variable, disk, network, or subprocess dependencies in
-core. A future adapter can construct typed inputs and call the same validator.
-
-An internal resolved configuration combines validated developer inputs with
-platform values. It is not a second public spec or persisted intermediate format.
-Generation always runs shared validation; library callers cannot bypass it by
-forgetting to call `validate` first. Invalid inputs return no generated files.
-Use HCL values for input strings; never concatenate untrusted input as HCL source.
+Create files only as their story needs them. Embed explicit files, not broad globs.
+Core exposes ordinary parse, validate, catalog-listing, and generation functions
+operating on supplied bytes and typed values, returning structured diagnostics or
+named file contents. There are no terminal, environment-variable, disk, network, or
+subprocess dependencies in core (`go:embed` is compile-time). `Generate` always runs
+validation, and invalid inputs return no files.
 
 ## 8. CLI and generated artifacts
 
-Proposed commands:
-
 ```sh
-stacksmith validate --spec examples/bucket.yaml --standards examples/standards.yaml
-stacksmith generate --spec examples/bucket.yaml --standards examples/standards.yaml --out ./orders-assets-dev
+stacksmith catalog list
+stacksmith validate --spec examples/network.yaml --standards examples/standards.yaml
+stacksmith generate --spec examples/network.yaml --standards examples/standards.yaml --out ./shared-network
 ```
 
 Use explicit flags, no hidden config search or interactive prompts. Support
-`.yaml`, `.yml`, and `.json`; report unsupported formats. CLI handles paths, bounded
-reads, presentation, exit codes, and output. Use exit 0 for success, 1 for invalid
-input/generation/I/O failures, and 2 for command usage errors.
+`.yaml`, `.yml`, and `.json`; report unsupported formats. Exit codes: 0 success, 1 for
+invalid input, generation, or I/O failures, and 2 for command usage errors. `validate`
+accepts `--format text|json` (presentation only). `catalog list` prints an aligned
+text table on stdout, with no flags.
 
-`validate` also accepts `--format text|json` (presentation only; default `text`). JSON
-mode prints one `{"valid","diagnostics"}` object on stdout; exit codes are unchanged.
-
-Each output is self-contained:
+Generated workspace:
 
 ```text
-orders-assets-dev/
-  versions.tf
-  providers.tf
-  main.tf
-  outputs.tf
-  modules/s3/
-    main.tf
-    variables.tf
-    outputs.tf
-    versions.tf
+shared-network/
+  roots/shared-network/
+    versions.tf        # required_version ">= 1.6"; aws from the catalog entry (~> 6.0)
+    providers.tf       # region + allowed_account_ids
+    main.tf            # upstream network template, executed unchanged
+    account_guard.tf   # caller-identity output precondition
+  modules/foggy-network/
+    main.tf, variables.tf, outputs.tf   # copied byte-for-byte from the snapshot
 ```
 
-Root `main.tf` calls `source = "./modules/s3"`. Copy approved child-module files
-unchanged; do not emit raw AWS resources into the root. Terraform still downloads
-its provider during `init`; a bundled module does not make Terraform execution
-offline or remove the need to install Terraform.
+The root calls `source = "../../modules/foggy-network"` and emits no resources of
+its own. `main.tf` starts with the upstream template's own "GENERATED BY foggy"
+header, because the template is executed unchanged. StackSmith-authored files
+carry a StackSmith header with the generator version and snapshot commit.
 
-Module ID `s3-private/v1` identifies the supported contract, not immutable bytes
-across every future StackSmith release. Module changes require a StackSmith
-release in v0.1. Record the generator version and module ID in a stable generated
-comment. Exact reproducibility requires the same generator build and bundled
-module bytes, not just the same input `apiVersion` or module ID.
-
-Use deterministic block/file ordering and sorted map keys. No timestamps, random
-suffixes, machine-specific absolute paths, or credentials in generated content.
-Do not promise identical AWS plans: credentials, state, provider versions, and
-live infrastructure affect Terraform independently of deterministic generation.
+Use deterministic file ordering and sorted map keys. Do not emit timestamps, random
+suffixes, machine-specific paths, credentials, or lock files. Do not promise identical AWS
+plans: credentials, state, resolved provider/module versions, and live
+infrastructure affect Terraform independently of deterministic generation.
 
 ### Output safety and regeneration — agreed
 
-Generate only into a new or empty directory. No overwrite or `--force` option.
+Generate only into a new or empty directory. There is no overwrite or `--force` option.
 Validate and render everything before writing. Use exclusive file creation,
 reject unsafe/symlink destinations, and never overwrite state, lock files, or
-existing content. Handle partial-write errors honestly; only clean up files
-created by the current run, never preexisting user files. Test these behaviors.
+existing content. Handle partial-write errors honestly: only clean up files and
+directories created by the current run, never preexisting user files.
 
 For changes to an existing deployment:
 
 1. Generate into a temporary review directory.
 2. Inspect the configuration and module diff.
-3. Manually copy intended configuration changes into the original workspace.
+3. Manually copy intended changes into the original workspace.
 4. Run Terraform there, preserving its state and dependency lock file.
 
-Never apply the review directory independently for the same bucket. Two states
-would compete for one resource. Do not copy/replace state as part of regeneration.
+Never apply the review directory independently for the same instance, because two
+states would compete for the same resources. Existing generated bucket workspaces
+from the S3 era are user-owned; StackSmith does not touch, migrate, or reinterpret them.
 
 ### State and dependency versions
 
-Use Terraform's default local state for the learning MVP, one authoritative root
-per bucket. Local state is not a team backend; protect it, retain it, and never
-commit it. Ignore state/backups, `.terraform/`, saved plan files, and real variable
-files in this repository. Do not ignore `.terraform.lock.hcl` globally: commit
-provider lock files with maintained root configurations.
+Use Terraform's default local state for the learning MVP, with one authoritative root
+per instance. Ignore state/backups, `.terraform/`, saved plans, and real variable
+files in this repository. Keep `.terraform.lock.hcl` trackable.
 
-Select and record tested Terraform and AWS provider versions in milestone 1;
-choose a Terraform version supporting native mock-provider tests. Root output
-pins the tested AWS provider version; child requirements declare compatibility.
-`terraform init` creates the provider dependency lock file, which is not fabricated
-by StackSmith. Provider upgrades are deliberate, reviewed changes, not implicit
-consequences of regeneration. Go dependencies are recorded in `go.mod`/`go.sum`.
+**Provider version change (amendment):** the S3-era plan pinned an exact AWS
+provider version (`5.100.0`) in generated roots. Blueprint roots now use the
+catalog entry's constraint, `~> 6.0`, and the vendored module requires the
+Registry module `terraform-aws-modules/vpc/aws` `~> 6.0`. Identical generated
+bytes therefore do not guarantee identical downloaded code. Users lock exact
+provider versions with Terraform's `.terraform.lock.hcl` in their deployment
+workspace, which StackSmith never fabricates. They should review Registry module
+upgrades deliberately. `terraform init` and `validate` of generated output need
+Terraform Registry access. Generation itself stays offline.
 
-## 9. Incremental implementation and learning roadmap
+## 9. Milestones
 
-### Milestone 1 — understand the actual Terraform
+### Completed (S3 era, superseded contract)
 
-Build only the canonical S3 child module, a hand-written example root, a focused
-native Terraform contract test, and the minimum documentation/ignore rules.
-Do not build the generator yet. Choose tested tool/provider versions first.
+Milestone 1 (hand-written S3 module and root), milestone 2 (strict parse/validate),
+milestone 3 (S3 generator, STACK-5..8), and the milestone 4 `validate` command
+(STACK-9) are complete. Their parser, diagnostics, CLI loading/escaping/exit-code
+rules, Terraform test harness, and safety lessons carry forward. The Bucket
+contract and S3 module are removed by the blueprint feature's Story 2a.
 
-Teach: HCL blocks and expressions; resources versus data sources; provider
-configuration and inheritance; root versus child modules; variables and outputs;
-resource references/dependency ordering; versioning, lifecycle, and bucket policy.
+### Milestone: catalog-backed blueprints (STACK-19)
 
-Check: `terraform fmt -check -recursive`, initialize without a remote backend,
-`terraform validate`, and native mock-provider plan tests for module invariants,
-input rejection, tags, lifecycle, and `force_destroy = false`. Provider downloads
-may need network access; mock tests must not create AWS resources. Review the
-hand-written root and account guardrail together before any real AWS run.
+Stories are defined in `docs/spec/features/blueprint-catalog/SPEC.md`, section 7.
+Each is one PR, implemented in order:
 
-### Milestone 2 — parse and validate the contract
+1. **Story 1 (STACK-20):** pinned catalog snapshot, SHA-256 manifest, `catalog list`.
+2. **Story 2a:** v2alpha1 Blueprint/standards with no overrides. Removes the whole
+   bucket path and rewires `validate`.
+3. **Story 2b:** typed parameter schema and the override policy.
+4. **Story 3:** `Generate` for `network` (template execution, versions/providers/
+   account guard, module vendoring, `terraform fmt` check).
+5. **Story 4a:** `generate` command, new/empty destination checks, nested directories.
+6. **Story 4b:** exclusive writes, symlink refusal, cleanup, sentinel tests.
+7. **Story 5:** `terraform init -backend=false` + `validate` checks, and docs.
 
-Add Go input types, strict YAML/JSON decoding, shared validation, diagnostics, and
-examples. No generated HCL or CLI output-writing yet.
+These replace the outlined CLI stories STACK-10..12.
 
-Teach: intent versus implementation; schema versus semantic rules; platform-owned
-values versus developer inputs; offline validation versus provider validation.
+Teach along the way: catalogs and pinned snapshots; Go `text/template` and why
+template data differs from template source; root versus child modules and local
+module sources; Registry modules and version constraints versus lock files; VPC
+basics (subnets, AZs, NAT gateways, flow logs); SSM as a cross-stack contract.
 
-Check: `go test ./...` covering equivalent formats, unknown/duplicate fields,
-wrong types, missing values, invalid environment/module/account/name, forbidden
-security/retention overrides, oversized input, and useful diagnostics.
+### Deferred: real sandbox lifecycle
 
-### Milestone 3 — generate the root we already understand
+A real `network` deployment creates billable resources (NAT gateways, flow-log
+storage). This is not part of the automated milestone. It needs separate user
+authorization, credentials, a written plan, and a cleanup plan before any
+`terraform plan`/`apply`. Until then, report real-AWS behavior as unverified.
 
-Add internal resolution, HCL generation, embedded module copying, and root outputs.
-Preserve the hand-written module's semantics; do not introduce a second module.
+### Close-out
 
-Teach: module composition; deterministic configuration versus runtime data-source
-values; stable names and resource addresses; provider/module version identity.
-
-Check: repeated output and YAML/JSON equivalence, sorted maps, literal escaping,
-invalid input yielding no files, byte-identical module copies, and readable golden
-output. Run Terraform format/validate checks on a generated fixture and inspect
-the account allowlist and approved module inputs.
-
-### Milestone 4 — expose the small CLI safely
-
-Add `validate`/`generate`, explicit flags, exit codes, bounded reads, and new/empty
-directory output. Document review/copy regeneration instead of in-place updates.
-
-Teach: pure library versus adapter; generated artifacts versus persistent state;
-why copying a Terraform directory is not the same as migrating infrastructure.
-
-Check: CLI success/errors, YAML/JSON combinations, nonempty and symlink output
-refusal, sentinel state/lock/config preservation, and partial I/O failure handling.
-Run `go test ./...`, `go vet ./...`, and `go build ./cmd/stacksmith`.
-
-### Milestone 5 — walk through a real sandbox lifecycle
-
-With explicit user authorization and a correctly configured sandbox, the user
-runs `terraform init`, reviews `plan`, and manually applies a generated bucket.
-Inspect outputs, tags, encryption, access controls, versioning, and state together.
-Demonstrate the review/copy workflow with a nonidentity change such as owner.
-
-Teach: desired state and reconciliation; plan versus apply; state/resource identity;
-drift; destructive changes; costs and cleanup. Explain noncurrent-version expiry
-without pretending a short test proves deletion after 30 days.
-
-Check: actual AWS settings and a no-change follow-up plan. Destroy the empty
-sandbox bucket deliberately. Any object/versioning experiment must include an
-explicit manual cleanup plan; StackSmith must not empty the bucket. If this
-milestone has not run, report real-AWS behavior as unverified, not passed.
-
-### Milestone 6 — review and close v0.1
-
-Finish a short usage/learning guide, limitations, dependency/version notes, and
-security review. Re-run core, CLI, and Terraform checks and review adherence to
-this plan. No feature expansion disguised as cleanup.
-
-Teach: validation layers and their limits; reproducible artifacts; operational
-responsibility; when a small compiler becomes a platform product.
-
-Acceptance: all automated checks pass, actionable findings are resolved, and
-manual AWS validation is either completed or explicitly identified as pending.
-Agree on the next milestone with the user rather than scaffolding future adapters.
+Finish a short usage/learning guide, limitations, dependency/version notes, and a
+security review. Re-run core, CLI, and Terraform checks. Do not disguise feature expansion as cleanup.
 
 ## 10. Decide now versus defer
 
-**Decided now:** ownership boundaries, Go/two packages, strict versioned inputs,
-one private bucket, S3 invariants and tags, 30-day platform expiration, account
-and region controls, fixed naming plus optional prefix, bundled module ID,
-determinism, readable output, thin CLI, and no-overwrite/local-state workflow.
+**Decided now:** ownership boundaries, Go/`core` + `internal/cli`, strict versioned
+inputs, pinned embedded snapshot with manifest, `network` as the only generated
+blueprint, built-in parameter types with standards-gated overrides, the safe
+charset rule for template data, account and region controls, deterministic readable
+output, workspace layout, a thin CLI, and the no-overwrite/local-state workflow.
 
 **Choose during implementation, before relying on them:** exact tested tool and
-library versions, small Go API signatures, complete module-variable checks,
-version-stamping build mechanics, and safe writer details. These must preserve
-this contract. Update this plan first if a material scope/contract change is needed.
+library versions, small Go API signatures, and the safe writer's details. These must
+preserve this contract. Update this plan first if a material contract change is needed.
 
-**Deliberately defer:** a second infrastructure type, generic policy language,
-module marketplace/registry, independently versioned company modules, automated
-upgrades, remote state/team collaboration, real environment/account isolation,
-IAM/RBAC enforcement, runtime drift detection, all service/AI adapters, and SaaS.
+**Deliberately defer:** generating other catalog entries, multi-root/dependency
+orchestration, catalog sync or remote fetching, a generic policy language,
+independently versioned modules, remote state and team collaboration, real
+environment/account isolation, IAM/RBAC enforcement, drift detection, adapters, and SaaS.
 
 ## 11. Challenges and limitations
 
-1. **Avoid recreating Terraform.** If the spec grows to mirror S3's full API,
-   StackSmith adds translation without reducing complexity. Keep the small intent
-   contract and put AWS implementation in Terraform.
+1. **Avoid recreating Terraform.** Keep the small intent contract and leave AWS implementation in the upstream module.
 2. **Local standards are not a security boundary.** A user who can change standards,
-   generated Terraform, or AWS directly can bypass this path. Version-control
-   review governs the platform source; IAM/SCPs and deployment authorization would
-   be separate organization-level controls. Do not claim universal enforcement.
-3. **Bundling limits platform independence.** Companies cannot distribute arbitrary
-   modules in v0.1. That is a conscious MVP constraint, not the final platform vision.
-4. **Determinism is narrower than reproducible deployment.** Lock versions and
-   inspect state/live plans; identical generated bytes alone are insufficient.
-5. **Naming and state are long-lived contracts.** Name-policy changes can replace
-   buckets. Losing state or independently applying duplicate roots causes problems.
-   No automatic rename, migration, or collision-retry scheme is included.
-6. **Versioning has costs and limits.** Noncurrent versions incur storage charges
-   until deleted; current objects remain. Lifecycle deletion reduces recovery
-   history. Thirty days is a learning default, not a compliance recommendation.
-7. **Secure does not mean complete.** No VPC-only access, backup system, immutable
-   retention, application access grants, or full deletion protection is promised.
-8. **Manual updates and local state do not scale to teams.** They are intentional
-   learning-MVP limits. Do not present this as production collaboration tooling.
-9. **Hand edits are visible but not a supported escape hatch.** Output is readable,
-   not tamper-proof; altered Terraform falls outside StackSmith's generated contract.
-10. **Two input formats add parser work.** Strictness and equivalent behavior need
-    real tests, not confidence in permissive library defaults.
+   generated Terraform, or AWS directly can bypass this path. IAM/SCPs are separate controls.
+3. **Snapshot staleness.** The pinned snapshot can drift from upstream. Refresh is a
+   deliberate, reviewed change (manifest SHA plus hashes, contract tests, output diff).
+4. **Listed is not supported.** `catalog list` shows entries StackSmith cannot generate yet.
+5. **Third-party dependency.** Output relies on Registry downloads for the VPC
+   module and the provider. `~> 6.0` constraints are not immutable pins.
+6. **Offline validation limits.** StackSmith cannot check CIDR overlap, AZ availability in
+   the region, name uniqueness, permissions, or live compliance.
+7. **Costs.** `network` creates NAT gateways and flow logs, which incur ongoing charges.
+   `prod` uses one NAT gateway per AZ.
+8. **Naming and state are long-lived contracts.** Renames and duplicate roots cause
+   replacement or competing state. No automatic migration is included.
+9. **Breaking change.** The old `Bucket` documents no longer validate. There is no compatibility mode.
+10. **Manual updates and local state do not scale to teams.** These are intentional MVP limits.
+11. **Hand edits are visible but not supported.** Altered Terraform falls outside StackSmith's contract.
+12. **Two input formats add parser work.** Strictness and equivalence need real tests.
 
 ## 12. Approval and progress
 
-The plan is approved. The S3 destruction safeguard is `force_destroy = false`,
-with no override. Milestones 1 (Terraform foundation) and 2 (strict parsing and
-validation) are complete. Generation and the CLI remain for later milestones;
-no AWS operations have been performed.
+The plan is approved. On 2026-10-13 the user approved the catalog-backed blueprint
+feature (`docs/spec/features/blueprint-catalog/SPEC.md`), which supersedes the
+S3-bucket contract. `docs/spec/features/generator/SPEC.md` and
+`docs/spec/features/s3-terraform-foundation/SPEC.md` are marked superseded. In
+`docs/spec/features/cli/SPEC.md`, STACK-9 is retained and STACK-10..12 are superseded.
+Implementation proceeds story by story from Story 1 (STACK-20). No AWS operations have
+been performed.

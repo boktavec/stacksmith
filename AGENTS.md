@@ -31,7 +31,9 @@ Read the relevant skill file before that kind of work:
 
 ## MCP and external tools
 
-Use current documentation tools (such as Context7) when a decision depends on version-specific library behavior. Use browser tools only when the feature has a runnable UI to verify. Tool availability varies by client; check before relying on a server and report unavailable checks honestly. Keep MCP credentials out of the repository, documentation, logs, and handoffs.
+- **`context7`** provides current third-party library, framework, and tool documentation (Go modules such as `yaml.v3`, Cobra, the Terraform AWS provider and registry modules). Planners, implementers, and reviewers should use it whenever a spec or implementation depends on a version-specific API, configuration, or behavior, rather than relying on memory. Record the library version and relevant finding in the spec or PR. StackSmith's repository and agreed spec remain the authority for StackSmith requirements and decisions.
+
+Use browser tools only when the feature has a runnable UI to verify. Tool availability varies by client; check before relying on a server and report unavailable checks honestly. Keep MCP credentials out of the repository, documentation, logs, and handoffs.
 
 Use the YouTrack MCP for project tracking. The project is **StackSmith** (`STACK`) and its board is **StackSmith v0.1**. Before creating projects, boards, or issues, list existing items to avoid duplicates. Treat `docs/stacksmith-core-plan.md` and feature specs as the requirements source of truth.
 

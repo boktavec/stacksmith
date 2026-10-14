@@ -1,8 +1,10 @@
 # Feature spec: CLI (Milestone 4)
 
-Status: **STACK-9 (section 1) APPROVED by user; planner re-review AGREE; plan sections 3, 7, 8 amended.** STACK-9 (section 1) is the only story
-designed in detail; STACK-10 to STACK-12 are outlined and get their own detailed
-sections before implementation.
+Status: **STACK-9 (section 1) APPROVED by user and implemented.** STACK-10 to STACK-12 are
+**superseded** by `docs/spec/features/blueprint-catalog/SPEC.md` (approved 2026-10-13):
+Stories 4a, 4b and 5 there replace them. STACK-9's bucket-specific inputs are rewired to
+the v2alpha1 Blueprint contract in that feature's Story 2a; its CLI rules (D1-D13: loading,
+escaping, streams, exit codes) remain in force.
 Parent plan: `docs/stacksmith-core-plan.md`, sections 7-8 and section 9,
 "Milestone 4 - expose the small CLI safely."
 Predecessor: `docs/spec/features/generator/SPEC.md` (Milestone 3, complete).
@@ -14,9 +16,12 @@ implemented in order.
 | Story | Title | Status in this spec |
 | --- | --- | --- |
 | STACK-9 | M4.1: Add shared CLI input loading and validate command | Designed (section 1) |
-| STACK-10 | M4.2: Add the generate command and validate output destinations | Outline only |
-| STACK-11 | M4.3: Make generated file writes exclusive and failure-safe | Outline only |
-| STACK-12 | M4.4: Document CLI workflows and verify end-to-end behavior | Outline only |
+| STACK-10 | M4.2: Add the generate command and validate output destinations | Superseded by blueprint-catalog Story 4a |
+| STACK-11 | M4.3: Make generated file writes exclusive and failure-safe | Superseded by blueprint-catalog Story 4b |
+| STACK-12 | M4.4: Document CLI workflows and verify end-to-end behavior | Superseded by blueprint-catalog Story 5 |
+
+Additional CLI work from the blueprint-catalog feature: `stacksmith catalog list`
+(Story 1, STACK-20) and the `validate` rewire to v2alpha1 (Story 2a).
 
 ---
 
@@ -98,7 +103,7 @@ main -> cli.Run(args, stdout, stderr) int
 
 ### 1.7 Acceptance criteria
 
-1. `validate --spec examples/bucket.yaml --standards examples/standards.yaml` exits 0 with the success line.
+1. `validate --spec examples/bucket.yaml --standards examples/standards.yaml` exits 0 with the success line. (Historical: after blueprint-catalog Story 2a the equivalent check uses `examples/network.yaml`.)
 2. `.yaml`, `.yml`, `.json` accepted; mixed spec/standards formats succeed; `.txt`, no extension and `.YAML` exit 1 naming the flag and the allowed extensions.
 3. Invalid input exits 1 with every diagnostic's document and field intact; when both files fail to parse, both diagnostics print, spec first.
 4. Parses-but-fails-validation input exits 1 with the validator's diagnostics.
@@ -143,10 +148,13 @@ errors as typed values vs exit codes.
 
 ---
 
-## 2. STACK-10 to STACK-12 (outline only)
+## 2. STACK-10 to STACK-12 (superseded)
 
-Detailed sections are written when each story starts. Fixed inputs from the
-tracker and plan:
+Superseded by `docs/spec/features/blueprint-catalog/SPEC.md` Stories 4a (generate,
+new/empty destination checks, nested `roots/` and `modules/` directories), 4b
+(exclusive writes, symlink refusal, cleanup, sentinel tests) and 5 (Terraform
+verification and documentation). The original outline below is kept for history;
+the blueprint-catalog spec is authoritative where they differ:
 
 - **STACK-10:** `generate` with `--spec`, `--standards`, `--out`; reuses `loadInput`
   and the exit-code mapping; parse + validate + render everything before the first

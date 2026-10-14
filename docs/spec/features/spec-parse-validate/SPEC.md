@@ -1,6 +1,8 @@
 # Feature spec: parse and validate the contract (Milestone 2)
 
-Status: complete.
+Status: **Superseded** by `docs/spec/features/blueprint-catalog/SPEC.md` (approved 2026-10-13; YouTrack STACK-19). The `stacksmith/v1alpha1` Bucket contract described here is removed in that feature's Story 2a; its strict-parsing rules carry forward there. Kept as a historical record only.
+
+Historical status: complete.
 Parent plan: `docs/stacksmith-core-plan.md`, section 9, "Milestone 2 — parse
 and validate the contract." First Go code in the repo; no HCL generation or
 CLI output-writing yet (milestones 3-4).
