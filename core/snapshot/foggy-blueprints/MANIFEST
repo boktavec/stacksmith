@@ -1,0 +1,14 @@
+# Provenance of this vendored snapshot of foggy-blueprints.
+# Do not edit the snapshot files by hand; they must stay byte-for-byte
+# identical to the upstream files at the commit below.
+#
+# To refresh:
+#   1. Pick the new upstream commit (full 40-character SHA).
+#   2. Copy each listed file from that commit into this directory, e.g.
+#      git -C <foggy-blueprints> show <sha>:catalog.yaml > catalog.yaml
+#   3. Update the commit line and recompute each checksum below with
+#      shasum -a 256 <path> (paths are relative to this directory).
+#   4. Update the pinned SHA in core/catalog_test.go and run go test ./core.
+repository https://github.com/FoggyOps-LLC/foggy-blueprints
+commit ed819adb2c5c71790c41a0510f604b38f1c9a6ed
+51da709deee5b5fe67746344480a4d62dfd8ab67815ecfa2a739b749e669b6de  catalog.yaml

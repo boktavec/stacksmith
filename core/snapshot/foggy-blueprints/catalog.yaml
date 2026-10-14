@@ -1,0 +1,183 @@
+# foggy-blueprints catalog
+#
+# The machine-readable index of the reusable Terraform blueprint modules in this
+# repo. foggy-cli reads this at a pinned ref to know, per blueprint type: its
+# summary, the SSM contract it publishes/consumes, the required instance params,
+# the provider versions its module + generated root pin, the dev/prod tier
+# presets, and where its module + (future) root template live.
+#
+# Mirrors foggy-cli's internal Registry (internal/domain/terraform/blueprints/
+# blueprints.go + dns.go). Provider versions here are the CURRENT pins set on the
+# modules in this repo. Templates are written later; the `template:` paths are
+# declared now so clients/CI can see the intended layout.
+#
+# SSM convention: producers publish to /foggy/<type>/<name>/<key>; consumers read
+# the same path (looser coupling than reaching into another stack's state).
+
+aws_provider_version: "~> 6.0"
+
+blueprints:
+  network:
+    summary: "VPC across N AZs (flow logs on, EKS-tagged subnets); publishes vpc/subnets to SSM."
+    required: []
+    publishes: [vpc_id, private_subnet_ids, public_subnet_ids]
+    consumes: []
+    aws_provider_version: "~> 6.0"
+    providers: []
+    tiers:
+      dev:
+        cidr: "10.10.0.0/16"
+        az_count: "2"
+        single_nat: "true"
+      prod:
+        cidr: "10.0.0.0/16"
+        az_count: "3"
+        single_nat: "false"
+    template: templates/network.tf.tmpl
+    module: modules/network
+
+  eks:
+    summary: "ArgoCD-ready EKS platform (Graviton, private API, KMS, Karpenter v1 spot/on-demand NodePools, AWS LB Controller + external-dns + cert-manager + ESO via Pod Identity); reads VPC from a network blueprint via SSM."
+    required: [network]
+    publishes:
+      - cluster_name
+      - cluster_endpoint
+      - cluster_certificate_authority_data
+      - oidc_provider_arn
+      - node_security_group_id
+      - karpenter_node_iam_role_name
+    consumes:
+      - network/<network>/vpc_id
+      - network/<network>/private_subnet_ids
+    aws_provider_version: "~> 6.0"
+    providers:
+      - {name: helm, source: hashicorp/helm, version: "~> 3.0"}
+      - {name: kubernetes, source: hashicorp/kubernetes, version: "~> 3.0"}
+      - {name: kubectl, source: alekc/kubectl, version: "~> 2.0"}
+    tiers:
+      # nonprod (cost-effective): private API always; small system NG, low
+      # Karpenter limits, short log retention, LE staging certs.
+      dev:
+        kubernetes_version: "1.33"
+        system_instance_types: '["m7g.large"]'
+        system_min_size: "2"
+        system_desired_size: "2"
+        system_max_size: "3"
+        spot_cpu_limit: "200"
+        on_demand_cpu_limit: "50"
+        log_retention_days: "30"
+        cert_manager_use_staging: "true"
+      # prod (HA): bigger system NG, high Karpenter limits, long log retention,
+      # LE production certs. API stays private on both tiers.
+      prod:
+        kubernetes_version: "1.33"
+        system_instance_types: '["m7g.large"]'
+        system_min_size: "3"
+        system_desired_size: "3"
+        system_max_size: "4"
+        spot_cpu_limit: "1000"
+        on_demand_cpu_limit: "300"
+        log_retention_days: "365"
+        cert_manager_use_staging: "false"
+    template: templates/eks.tf.tmpl
+    module: modules/eks
+
+  rds:
+    summary: "PostgreSQL (Multi-AZ, encrypted, Secrets-Manager password); reads VPC from network, ingress from an eks blueprint, via SSM."
+    required: [network]
+    publishes: [endpoint, master_secret_arn]
+    consumes:
+      - network/<network>/vpc_id
+      - network/<network>/private_subnet_ids
+      - eks/<eks>/node_security_group_id (optional)
+    aws_provider_version: "~> 6.0"
+    providers: []
+    tiers:
+      dev:
+        instance_class: "db.t4g.medium"
+        multi_az: "false"
+        allocated_storage: "20"
+        backup_retention_days: "7"
+        deletion_protection: "false"
+      prod:
+        instance_class: "db.r6g.large"
+        multi_az: "true"
+        allocated_storage: "100"
+        backup_retention_days: "14"
+        deletion_protection: "true"
+    template: templates/rds.tf.tmpl
+    module: modules/rds
+
+  s3-event-worker:
+    summary: "S3-event-driven Lambda worker: a bucket's ObjectCreated events -> SQS (+ DLQ + depth alarm) -> Lambda (ARM64). Least-privilege IAM scoped to read/write key prefixes + the bucket CMK. Language/version parameterized (python|node); handler code is deployed by the app repo CI (ships a stub + ignore_changes)."
+    required: []
+    publishes: [queue_arn, dlq_arn]
+    consumes: []
+    aws_provider_version: "~> 6.0"
+    providers:
+      - {name: archive, source: hashicorp/archive, version: "~> 2.4"}
+    tiers:
+      dev:
+        memory_size: "1024"
+        timeout: "60"
+        log_retention_days: "30"
+      prod:
+        memory_size: "2048"
+        timeout: "120"
+        log_retention_days: "90"
+    template: templates/s3-event-worker.tf.tmpl
+    module: modules/s3-event-worker
+  bastion:
+    summary: "SSM jump host in a network blueprint's VPC (no SSH/inbound/public IP; reaches SSM over PrivateLink endpoints). Operators port-forward through it to private RDS/EKS/Atlantis; publishes instance_id + security_group_id."
+    required: [network]
+    publishes: [instance_id, security_group_id]
+    consumes:
+      - network/<network>/vpc_id
+      - network/<network>/private_subnet_ids
+      - eks/<eks>/node_security_group_id (optional)
+    aws_provider_version: "~> 6.0"
+    providers: []
+    tiers:
+      dev:
+        instance_type: "t4g.nano"
+      prod:
+        instance_type: "t4g.small"
+    template: templates/bastion.tf.tmpl
+    module: modules/bastion
+
+  argocd:
+    summary: "Argo CD (GitOps engine) onto an eks cluster via Helm — the platform->app handoff; reads the cluster from SSM."
+    required: [eks]
+    publishes: []
+    consumes:
+      - eks/<eks>/cluster_name
+    aws_provider_version: "~> 6.0"
+    providers:
+      - {name: helm, source: hashicorp/helm, version: "~> 3.0"}
+      - {name: kubernetes, source: hashicorp/kubernetes, version: "~> 3.0"}
+    tiers:
+      dev:
+        ha: "false"
+        chart_version: "10.0.0"
+      prod:
+        ha: "true"
+        chart_version: "10.0.0"
+    template: templates/argocd.tf.tmpl
+    module: modules/argocd
+
+  dns:
+    summary: "Multi-account Route53 delegation: per-env subzone <env>.<domain> in the app account + an NS delegation record in the apex zone; publishes the subzone to SSM."
+    required: []
+    publishes:
+      - dns/<env>/zone_id
+      - dns/<env>/zone_name
+      - dns/<env>/name_servers
+    consumes: []
+    aws_provider_version: "~> 6.0"
+    # The dns module is the only multi-provider blueprint: the default aws provider
+    # is the app account (subzone + SSM); aws.apex is the DNS/apex account (the NS
+    # delegation record). The generated root configures both.
+    providers: []
+    tiers: {}
+    template: templates/dns.tf.tmpl
+    module: modules/dns

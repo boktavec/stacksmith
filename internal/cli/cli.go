@@ -62,7 +62,7 @@ func newRootCmd(stdout, stderr io.Writer, exitCode *int) *cobra.Command {
 		// Cobra's default for a root without Run is "print help, exit 0",
 		// which would break the exit-code contract; make it a usage error.
 		RunE: func(*cobra.Command, []string) error {
-			return errors.New(`a command is required; use "validate"`)
+			return errors.New(`a command is required; use "validate" or "catalog list"`)
 		},
 	}
 	root.SetOut(stdout)
@@ -80,6 +80,7 @@ func newRootCmd(stdout, stderr io.Writer, exitCode *int) *cobra.Command {
 		},
 	})
 	root.AddCommand(newValidateCmd(stdout, stderr, exitCode))
+	root.AddCommand(newCatalogCmd(stdout))
 	return root
 }
 
