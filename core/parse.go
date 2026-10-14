@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -19,7 +21,42 @@ const (
 	objectValue valueKind = iota + 1
 	arrayValue
 	stringValue
+	integerValue
 )
+
+// wildcard in a schema's fields table means "any key is allowed here" (a
+// dynamic-key map such as spec.parameters); the children of such a key are
+// described by the schema path with "*" in place of the key.
+const wildcard = "*"
+
+// integerPattern is the only integer spelling accepted. yaml.v3 also resolves
+// 0x2, 0o7, 1_0, +2 and 010 (octal, so 8) as !!int, none of which belong in a
+// config file, and it turns overflowing digits into !!float.
+var integerPattern = regexp.MustCompile(`^-?(0|[1-9][0-9]*)$`)
+
+// location is where the walker is in a document. path is the user-facing field
+// path used in diagnostics. shape is the same path with every dynamic key
+// replaced by "*", so the schema tables can be indexed by it even when a key
+// contains dots. For example path "spec.parameters.az_count" has shape
+// "spec.parameters.*".
+type location struct{ path, shape string }
+
+func (l location) key(name string, allowed map[string]struct{}) location {
+	shape := name
+	if _, dynamic := allowed[wildcard]; dynamic {
+		shape = wildcard
+	}
+	return location{path: joinField(l.path, name), shape: joinField(l.shape, shape)}
+}
+
+// item is the location of an array element. Elements share one shape, "[]".
+func (l location) item(index int) location {
+	shape := l.shape
+	if len(shape) <= maxFieldPathBytes {
+		shape += "[]"
+	}
+	return location{path: itemPath(l.path, index), shape: shape}
+}
 
 type documentSchema struct {
 	name string
@@ -47,15 +84,15 @@ var specSchema = documentSchema{
 	apiVersion: apiVersionV2Alpha1,
 	kind:       "Blueprint",
 	fields: map[string]map[string]struct{}{
-		"":         fieldSet("apiVersion", "kind", "metadata", "spec"),
-		"metadata": fieldSet("name"),
-		"spec":     fieldSet("blueprint", "environment", "tier", "parameters"),
-		// Empty on purpose: any parameter is an unknown field until Story 2b.
-		"spec.parameters": fieldSet(),
+		"":                fieldSet("apiVersion", "kind", "metadata", "spec"),
+		"metadata":        fieldSet("name"),
+		"spec":            fieldSet("blueprint", "environment", "tier", "parameters"),
+		"spec.parameters": fieldSet(wildcard),
 	},
 	kinds: map[string]valueKind{
 		"": objectValue, "metadata": objectValue, "spec": objectValue, "spec.parameters": objectValue,
-		"apiVersion": stringValue, "kind": stringValue, "metadata.name": stringValue,
+		"spec.parameters.*": stringValue,
+		"apiVersion":        stringValue, "kind": stringValue, "metadata.name": stringValue,
 		"spec.blueprint": stringValue, "spec.environment": stringValue, "spec.tier": stringValue,
 	},
 	required: []string{"apiVersion", "kind", "metadata.name", "spec.blueprint", "spec.environment", "spec.tier"},
@@ -67,14 +104,31 @@ var standardsSchema = documentSchema{
 	kind:       "PlatformStandards",
 	fields: map[string]map[string]struct{}{
 		"":         fieldSet("apiVersion", "kind", "spec"),
-		"spec":     fieldSet("aws", "environments"),
+		"spec":     fieldSet("aws", "environments", "blueprintOverrides"),
 		"spec.aws": fieldSet("accountId", "region"),
+		// blueprintOverrides.<blueprint>.tiers.<tier>.parameters.<name> is one policy.
+		"spec.blueprintOverrides":                        fieldSet(wildcard),
+		"spec.blueprintOverrides.*":                      fieldSet("tiers"),
+		"spec.blueprintOverrides.*.tiers":                fieldSet(wildcard),
+		"spec.blueprintOverrides.*.tiers.*":              fieldSet("parameters"),
+		"spec.blueprintOverrides.*.tiers.*.parameters":   fieldSet(wildcard),
+		"spec.blueprintOverrides.*.tiers.*.parameters.*": fieldSet("minimum", "maximum", "allowed"),
 	},
 	kinds: map[string]valueKind{
 		"": objectValue, "spec": objectValue, "spec.aws": objectValue,
 		"apiVersion": stringValue, "kind": stringValue,
 		"spec.aws.accountId": stringValue, "spec.aws.region": stringValue,
-		"spec.environments": arrayValue,
+		"spec.environments": arrayValue, "spec.environments[]": stringValue,
+		"spec.blueprintOverrides":                                  objectValue,
+		"spec.blueprintOverrides.*":                                objectValue,
+		"spec.blueprintOverrides.*.tiers":                          objectValue,
+		"spec.blueprintOverrides.*.tiers.*":                        objectValue,
+		"spec.blueprintOverrides.*.tiers.*.parameters":             objectValue,
+		"spec.blueprintOverrides.*.tiers.*.parameters.*":           objectValue,
+		"spec.blueprintOverrides.*.tiers.*.parameters.*.minimum":   integerValue,
+		"spec.blueprintOverrides.*.tiers.*.parameters.*.maximum":   integerValue,
+		"spec.blueprintOverrides.*.tiers.*.parameters.*.allowed":   arrayValue,
+		"spec.blueprintOverrides.*.tiers.*.parameters.*.allowed[]": stringValue,
 	},
 	required: []string{
 		"apiVersion", "kind", "spec.aws.accountId", "spec.aws.region", "spec.environments",
@@ -223,15 +277,16 @@ func readYAMLDocument(data []byte, schema documentSchema) (any, *parseFailure) {
 		}
 		return nil, &parseFailure{message: fmt.Sprintf("invalid YAML after the document (%v).", err)}
 	}
-	return inspectYAML(&document, "", schema)
+	return inspectYAML(&document, location{}, schema)
 }
 
-func inspectYAML(node *yaml.Node, path string, schema documentSchema) (any, *parseFailure) {
+func inspectYAML(node *yaml.Node, loc location, schema documentSchema) (any, *parseFailure) {
+	path := loc.path
 	if node.Kind == yaml.DocumentNode {
 		if len(node.Content) != 1 {
 			return nil, &parseFailure{field: path, message: "document must contain one value; provide one top-level object.", line: node.Line}
 		}
-		return inspectYAML(node.Content[0], path, schema)
+		return inspectYAML(node.Content[0], loc, schema)
 	}
 	if node.Kind == yaml.AliasNode {
 		return nil, &parseFailure{field: path, message: "YAML aliases are not supported; write the value explicitly.", line: node.Line}
@@ -243,7 +298,7 @@ func inspectYAML(node *yaml.Node, path string, schema documentSchema) (any, *par
 		return nil, &parseFailure{field: path, message: "null is not supported; provide a non-null value.", line: node.Line}
 	}
 
-	if expected, ok := expectedKind(path, schema); ok && !yamlKindMatches(node, expected) {
+	if expected, ok := expectedKind(loc.shape, schema); ok && !yamlKindMatches(node, expected) {
 		return nil, &parseFailure{field: path, message: expectedTypeMessage(expected), line: node.Line}
 	}
 
@@ -252,8 +307,12 @@ func inspectYAML(node *yaml.Node, path string, schema documentSchema) (any, *par
 		if !allowedYAMLScalarTag(node.Tag) {
 			return nil, &parseFailure{field: path, message: "custom or non-JSON YAML tags are not supported; use a plain JSON-compatible scalar.", line: node.Line}
 		}
-		if expected, ok := expectedKind(path, schema); ok && expected == stringValue && node.Tag != "!!str" {
+		expected, _ := expectedKind(loc.shape, schema)
+		if expected == stringValue && node.Tag != "!!str" {
 			return nil, &parseFailure{field: path, message: "expected a string; quote or provide a string value.", line: node.Line}
+		}
+		if expected == integerValue && (node.Tag != "!!int" || !validInteger(node.Value)) {
+			return nil, &parseFailure{field: path, message: integerMessage, line: node.Line}
 		}
 		return node.Value, nil
 	case yaml.MappingNode:
@@ -277,13 +336,11 @@ func inspectYAML(node *yaml.Node, path string, schema documentSchema) (any, *par
 				return nil, &parseFailure{field: joinField(path, key.Value), message: "duplicate key; remove one occurrence.", line: key.Line}
 			}
 			seen[key.Value] = struct{}{}
-			if allowed, ok := schema.fields[path]; ok {
-				if _, known := allowed[key.Value]; !known {
-					return nil, &parseFailure{field: joinField(path, key.Value), message: "unknown field; use only fields defined by the document schema.", line: key.Line}
-				}
+			allowed, restricted := schema.fields[loc.shape]
+			if restricted && !allowedKey(allowed, key.Value) {
+				return nil, &parseFailure{field: joinField(path, key.Value), message: "unknown field; use only fields defined by the document schema.", line: key.Line}
 			}
-			field := joinField(path, key.Value)
-			decoded, failure := inspectYAML(value, field, schema)
+			decoded, failure := inspectYAML(value, loc.key(key.Value, allowed), schema)
 			if failure != nil {
 				return nil, failure
 			}
@@ -296,8 +353,7 @@ func inspectYAML(node *yaml.Node, path string, schema documentSchema) (any, *par
 		}
 		values := make([]any, len(node.Content))
 		for i, child := range node.Content {
-			field := itemPath(path, i)
-			decoded, failure := inspectYAML(child, field, schema)
+			decoded, failure := inspectYAML(child, loc.item(i), schema)
 			if failure != nil {
 				return nil, failure
 			}
@@ -324,7 +380,7 @@ func yamlKindMatches(node *yaml.Node, expected valueKind) bool {
 		return node.Kind == yaml.MappingNode
 	case arrayValue:
 		return node.Kind == yaml.SequenceNode
-	case stringValue:
+	case stringValue, integerValue:
 		return node.Kind == yaml.ScalarNode
 	default:
 		return true
@@ -334,7 +390,7 @@ func yamlKindMatches(node *yaml.Node, expected valueKind) bool {
 func readJSONDocument(data []byte, schema documentSchema) (any, *parseFailure) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
-	value, failure := readJSONValue(decoder, "", schema)
+	value, failure := readJSONValue(decoder, location{}, schema)
 	if failure != nil {
 		return nil, failure
 	}
@@ -347,7 +403,8 @@ func readJSONDocument(data []byte, schema documentSchema) (any, *parseFailure) {
 	return value, nil
 }
 
-func readJSONValue(decoder *json.Decoder, path string, schema documentSchema) (any, *parseFailure) {
+func readJSONValue(decoder *json.Decoder, loc location, schema documentSchema) (any, *parseFailure) {
+	path := loc.path
 	token, err := decoder.Token()
 	if err != nil {
 		return nil, &parseFailure{field: path, message: fmt.Sprintf("invalid JSON; provide one valid object (%v).", err)}
@@ -355,7 +412,7 @@ func readJSONValue(decoder *json.Decoder, path string, schema documentSchema) (a
 	if token == nil {
 		return nil, &parseFailure{field: path, message: "null is not supported; provide a non-null value."}
 	}
-	if failure := checkJSONKind(token, path, schema); failure != nil {
+	if failure := checkJSONKind(token, loc, schema); failure != nil {
 		return nil, failure
 	}
 
@@ -381,12 +438,11 @@ func readJSONValue(decoder *json.Decoder, path string, schema documentSchema) (a
 				return nil, &parseFailure{field: field, message: "duplicate key; remove one occurrence."}
 			}
 			seen[key] = struct{}{}
-			if allowed, ok := schema.fields[path]; ok {
-				if _, known := allowed[key]; !known {
-					return nil, &parseFailure{field: field, message: "unknown field; use only fields defined by the document schema."}
-				}
+			allowed, restricted := schema.fields[loc.shape]
+			if restricted && !allowedKey(allowed, key) {
+				return nil, &parseFailure{field: field, message: "unknown field; use only fields defined by the document schema."}
 			}
-			value, failure := readJSONValue(decoder, field, schema)
+			value, failure := readJSONValue(decoder, loc.key(key, allowed), schema)
 			if failure != nil {
 				return nil, failure
 			}
@@ -399,7 +455,7 @@ func readJSONValue(decoder *json.Decoder, path string, schema documentSchema) (a
 	case '[':
 		values := make([]any, 0)
 		for i := 0; decoder.More(); i++ {
-			value, failure := readJSONValue(decoder, itemPath(path, i), schema)
+			value, failure := readJSONValue(decoder, loc.item(i), schema)
 			if failure != nil {
 				return nil, failure
 			}
@@ -414,8 +470,8 @@ func readJSONValue(decoder *json.Decoder, path string, schema documentSchema) (a
 	}
 }
 
-func checkJSONKind(token any, path string, schema documentSchema) *parseFailure {
-	expected, ok := expectedKind(path, schema)
+func checkJSONKind(token any, loc location, schema documentSchema) *parseFailure {
+	expected, ok := expectedKind(loc.shape, schema)
 	if !ok {
 		return nil
 	}
@@ -431,20 +487,41 @@ func checkJSONKind(token any, path string, schema documentSchema) *parseFailure 
 		}
 	case stringValue:
 		_, matches = token.(string)
+	case integerValue:
+		// UseNumber keeps the literal text, so 2.0, 2e0 and overflow are visible.
+		number, isNumber := token.(json.Number)
+		if !isNumber || !validInteger(number.String()) {
+			return &parseFailure{field: loc.path, message: integerMessage}
+		}
+		matches = true
 	}
 	if !matches {
-		return &parseFailure{field: path, message: expectedTypeMessage(expected)}
+		return &parseFailure{field: loc.path, message: expectedTypeMessage(expected)}
 	}
 	return nil
 }
 
-func expectedKind(path string, schema documentSchema) (valueKind, bool) {
-	// Array items are type-checked only when the schema declares the array.
-	if strings.HasPrefix(path, "spec.environments[") && schema.kinds["spec.environments"] == arrayValue {
-		return stringValue, true
-	}
-	kind, ok := schema.kinds[path]
+// expectedKind looks up the kind declared for a schema shape (see location).
+func expectedKind(shape string, schema documentSchema) (valueKind, bool) {
+	kind, ok := schema.kinds[shape]
 	return kind, ok
+}
+
+func allowedKey(allowed map[string]struct{}, key string) bool {
+	_, ok := allowed[key]
+	_, dynamic := allowed[wildcard]
+	return ok || dynamic
+}
+
+const integerMessage = "expected an integer; use plain decimal digits such as 2 (no quotes, sign prefix, fraction, exponent or leading zero)."
+
+// validInteger reports whether text is a plain decimal integer that fits an int.
+func validInteger(text string) bool {
+	if !integerPattern.MatchString(text) {
+		return false
+	}
+	_, err := strconv.Atoi(text)
+	return err == nil
 }
 
 func expectedTypeMessage(expected valueKind) string {
@@ -455,6 +532,8 @@ func expectedTypeMessage(expected valueKind) string {
 		return "expected an array; provide a sequence/array value."
 	case stringValue:
 		return "expected a string; provide a string value."
+	case integerValue:
+		return integerMessage
 	default:
 		return "value has the wrong type; use the type required by the field."
 	}

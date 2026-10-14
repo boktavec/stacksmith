@@ -6,3 +6,5 @@ spec:
   blueprint: network
   environment: dev
   tier: dev
+  parameters:
+    az_count: "3"

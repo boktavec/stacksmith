@@ -7,3 +7,13 @@ spec:
   environments:
     - dev
     - prod
+  # Which parameters developers may override, per blueprint and tier. A
+  # parameter without an entry cannot be overridden.
+  blueprintOverrides:
+    network:
+      tiers:
+        dev:
+          parameters:
+            az_count:
+              minimum: 2
+              maximum: 3
