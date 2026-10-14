@@ -1,6 +1,8 @@
 # Feature spec: S3 Terraform foundation (Milestone 1)
 
-Status: draft, awaiting approval.
+Status: **Superseded** by `docs/spec/features/blueprint-catalog/SPEC.md` (approved 2026-10-13; YouTrack STACK-19). The Bucket contract, S3 generator and bundled S3 module described here are removed in that feature's Story 2a. This document is kept as a historical record only; it is not an active requirement.
+
+Historical status: implemented as Milestone 1 (canonical S3 module, manual root, native tests).
 Parent plan: `docs/stacksmith-core-plan.md`, section 9, "Milestone 1 — understand
 the actual Terraform." This is the only milestone with no Go code — it exists
 to build and prove the canonical Terraform by hand before anything generates it.

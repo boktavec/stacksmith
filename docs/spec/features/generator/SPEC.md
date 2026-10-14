@@ -1,7 +1,9 @@
 # Feature spec: generator (Milestone 3)
 
-Status: STACK-5 and STACK-6 approved and implemented; STACK-7 (section 3)
-approved and implemented; STACK-8 (section 4) implemented, pending independent review.
+Status: **Superseded** by `docs/spec/features/blueprint-catalog/SPEC.md` (approved 2026-10-13; YouTrack STACK-19). The Bucket contract, S3 generator and bundled S3 module described here are removed in that feature's Story 2a. This document is kept as a historical record only; it is not an active requirement.
+
+Historical status: STACK-5 and STACK-6 approved and implemented; STACK-7 (section 3)
+approved and implemented; STACK-8 (section 4) implemented.
 Parent plan: `docs/stacksmith-core-plan.md`, sections 4-8 and section 9,
 "Milestone 3 - generate the root we already understand."
 Predecessor: `docs/spec/features/spec-parse-validate/SPEC.md` (Milestone 2, complete).
