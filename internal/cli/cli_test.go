@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	exampleSpec      = "../../examples/bucket.yaml"
-	exampleSpecJSON  = "../../examples/bucket.json"
+	exampleSpec      = "../../examples/network.yaml"
+	exampleSpecJSON  = "../../examples/network.json"
 	exampleStandards = "../../examples/standards.yaml"
 )
 
@@ -42,13 +42,14 @@ func validate(t *testing.T, extra ...string) (int, string, string) {
 	return run(t, append([]string{"validate"}, extra...)...)
 }
 
-const specYAML = `apiVersion: stacksmith/v1alpha1
-kind: Bucket
+const specYAML = `apiVersion: stacksmith/v2alpha1
+kind: Blueprint
 metadata:
-  name: orders-assets
+  name: shared-network
 spec:
+  blueprint: network
   environment: dev
-  owner: orders-team
+  tier: dev
 `
 
 func TestValidateExamplesSucceed(t *testing.T) { // AC1
@@ -58,9 +59,18 @@ func TestValidateExamplesSucceed(t *testing.T) { // AC1
 	}
 }
 
+func TestValidateExamplesSucceedInBothFormats(t *testing.T) { // AC7
+	for _, spec := range []string{exampleSpec, exampleSpecJSON} {
+		code, stdout, stderr := validate(t, "--spec", spec, "--standards", exampleStandards)
+		if code != 0 || stdout != "spec and standards are valid\n" || stderr != "" {
+			t.Fatalf("%s: code=%d stdout=%q stderr=%q", spec, code, stdout, stderr)
+		}
+	}
+}
+
 func TestValidateAcceptsAllExtensionsAndMixedFormats(t *testing.T) { // AC2
 	standardsYML := writeFile(t, "standards.yml", mustRead(t, exampleStandards))
-	specYML := writeFile(t, "bucket.yml", specYAML)
+	specYML := writeFile(t, "network.yml", specYAML)
 	for name, args := range map[string][]string{
 		"json spec, yaml standards": {"--spec", exampleSpecJSON, "--standards", exampleStandards},
 		"yml spec, yml standards":   {"--spec", specYML, "--standards", standardsYML},
@@ -99,15 +109,15 @@ func TestValidateRejectsBadExtensions(t *testing.T) { // AC2
 }
 
 func TestValidateReportsParseDiagnosticsForBothDocuments(t *testing.T) { // AC3
-	spec := writeFile(t, "spec.yaml", "apiVersion: stacksmith/v1alpha1\nkind: Bucket\nmetadata:\n  name: a\nspec:\n  environment: dev\n  owner: o\n  bogus: 1\n")
-	standards := writeFile(t, "standards.json", `{"apiVersion":"stacksmith/v1alpha1","kind":"PlatformStandards","spec":{"aws":{"accountId":"123456789012","region":"us-east-2","extra":1}}}`)
+	spec := writeFile(t, "spec.yaml", specYAML+"  bogus: 1\n")
+	standards := writeFile(t, "standards.json", `{"apiVersion":"stacksmith/v2alpha1","kind":"PlatformStandards","spec":{"aws":{"accountId":"123456789012","region":"us-east-2","extra":1}}}`)
 	code, stdout, stderr := validate(t, "--spec", spec, "--standards", standards)
 	if code != 1 || stdout != "" {
 		t.Fatalf("code=%d stdout=%q", code, stdout)
 	}
 	lines := strings.Split(strings.TrimSpace(stderr), "\n")
 	if len(lines) != 2 ||
-		!strings.HasPrefix(lines[0], "bucket spec: spec.bogus: ") ||
+		!strings.HasPrefix(lines[0], "blueprint spec: spec.bogus: ") ||
 		!strings.HasPrefix(lines[1], "platform standards: spec.aws.extra: ") {
 		t.Fatalf("stderr=%q", stderr)
 	}
@@ -116,7 +126,7 @@ func TestValidateReportsParseDiagnosticsForBothDocuments(t *testing.T) { // AC3
 func TestValidateReportsSemanticDiagnostics(t *testing.T) { // AC4
 	spec := writeFile(t, "spec.yaml", strings.Replace(specYAML, "environment: dev", "environment: staging", 1))
 	code, stdout, stderr := validate(t, "--spec", spec, "--standards", exampleStandards)
-	want := "bucket spec: spec.environment: environment \"staging\" is not allowed; choose one listed in platform standards.\n"
+	want := "blueprint spec: spec.environment: environment \"staging\" is not allowed; choose one listed in platform standards.\n"
 	if code != 1 || stdout != "" || stderr != want {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -125,7 +135,7 @@ func TestValidateReportsSemanticDiagnostics(t *testing.T) { // AC4
 func TestDiagnosticWithoutFieldHasNoEmptyFieldSegment(t *testing.T) { // D8
 	spec := writeFile(t, "spec.yaml", "{not yaml")
 	_, _, stderr := validate(t, "--spec", spec, "--standards", exampleStandards)
-	if !strings.HasPrefix(stderr, "bucket spec: ") || strings.HasPrefix(stderr, "bucket spec: : ") {
+	if !strings.HasPrefix(stderr, "blueprint spec: ") || strings.HasPrefix(stderr, "blueprint spec: : ") {
 		t.Fatalf("stderr=%q", stderr)
 	}
 }
@@ -205,7 +215,7 @@ func TestValidateLoadErrorStopsAtFirstFailingFileSpecFirst(t *testing.T) { // D7
 func TestValidateOversizeFileGetsCoreDiagnostic(t *testing.T) { // AC6
 	spec := writeFile(t, "spec.yaml", paddedSpec(maxInputBytes+1))
 	code, stdout, stderr := validate(t, "--spec", spec, "--standards", exampleStandards)
-	want := "bucket spec: document exceeds the 1 MiB limit; reduce its size.\n"
+	want := "blueprint spec: document exceeds the 1 MiB limit; reduce its size.\n"
 	if code != 1 || stdout != "" || stderr != want {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -236,7 +246,7 @@ func TestValidateJSONFormat(t *testing.T) { // AC7
 			t.Fatalf("result=%+v", got)
 		}
 		d := got.Diagnostics[0]
-		if d.Document != "bucket spec" || d.Field != "spec.environment" || !strings.Contains(d.Message, "staging") {
+		if d.Document != "blueprint spec" || d.Field != "spec.environment" || !strings.Contains(d.Message, "staging") {
 			t.Fatalf("diagnostic=%+v", d)
 		}
 		if !strings.Contains(stdout, `"document"`) || !strings.Contains(stdout, `"field"`) || !strings.Contains(stdout, `"message"`) {
@@ -254,7 +264,7 @@ func TestValidateJSONFormat(t *testing.T) { // AC7
 func TestValidateEscapesControlCharactersInDiagnostics(t *testing.T) { // AC8
 	const ansiKey = "x\x1b[31mred"
 	yamlSpec := specYAML + "  \"" + `x\e[31mred` + "\": 1\n"
-	jsonSpec := `{"apiVersion":"stacksmith/v1alpha1","kind":"Bucket","metadata":{"name":"a"},"spec":{"environment":"dev","owner":"o","x\u001b[31mred":1}}`
+	jsonSpec := `{"apiVersion":"stacksmith/v2alpha1","kind":"Blueprint","metadata":{"name":"a"},"spec":{"blueprint":"network","environment":"dev","tier":"dev","x\u001b[31mred":1}}`
 	for name, spec := range map[string]string{
 		"spec.yaml": yamlSpec,
 		"spec.json": jsonSpec,
@@ -284,7 +294,7 @@ func TestValidateEscapesControlCharactersInDiagnostics(t *testing.T) { // AC8
 }
 
 func TestEscapeControlLeavesPrintableTextUnchanged(t *testing.T) { // AC8
-	for _, s := range []string{`unsupported kind "x"; use "Bucket".`, "café 日本語", ""} {
+	for _, s := range []string{`unsupported kind "x"; use "Blueprint".`, "café 日本語", ""} {
 		if got := escapeControl(s); got != s {
 			t.Errorf("escapeControl(%q) = %q", s, got)
 		}
@@ -295,9 +305,9 @@ func TestEscapeControlLeavesPrintableTextUnchanged(t *testing.T) { // AC8
 }
 
 func TestOrdinaryDiagnosticPrintedByteForByte(t *testing.T) { // AC8
-	spec := writeFile(t, "spec.yaml", strings.Replace(specYAML, "kind: Bucket", "kind: x", 1))
+	spec := writeFile(t, "spec.yaml", strings.Replace(specYAML, "kind: Blueprint", "kind: x", 1))
 	_, _, stderr := validate(t, "--spec", spec, "--standards", exampleStandards)
-	want := "bucket spec: kind: unsupported kind \"x\"; use \"Bucket\".\n"
+	want := "blueprint spec: kind: unsupported kind \"x\"; use \"Blueprint\".\n"
 	if stderr != want {
 		t.Fatalf("stderr=%q want %q", stderr, want)
 	}
